@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
+# ONNX models (too large for git, use Git LFS or download script)
+models/*.onnx
+
+# Environment
+.env
+.env.local
+
+# Build
+dist/
+build/
+*.js.map
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+coverage/
+test-results/
