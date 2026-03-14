@@ -229,8 +229,53 @@
 - [ ] 新增 Face LSH 配置（512 維 → 128-bit hash）
 - [ ] 更新 Behavior LSH 配置（18 維 → 64-bit hash）
 - [ ] 實作 LSH 模糊匹配（漢明距離查詢）
+- [ ] 實作 LSH Bucket Indexing（大規模用戶效能優化）
 - [ ] 確定兩套 threshold
 - [ ] 單元測試：同人/不同人的分布
+
+### LSH 信心分數原理
+
+```
+LSH 不是傳統 hash（一點不同就天差地遠）。
+LSH 的數學保證：越相似的向量 → hash 越像。
+
+原理：N 個隨機超平面，每個超平面判斷向量在哪一側（0 或 1）
+  → 相似向量在大多數超平面同側 → hash 大部分 bit 相同
+  → 漢明距離小 → 相似度高
+
+範例（64-bit behavior hash）：
+  同一人兩次輸入：hash 差 5-8 bit → 相似度 87-92%
+  不同人：hash 差 ~32 bit → 相似度 ~50%（隨機水平）
+```
+
+### LSH Bucket Indexing（效能優化）
+
+```
+問題：400 萬用戶，每次 lookup 掃全表算漢明距離？
+
+解法：將 128-bit face hash 拆成 4 段 segment，建 4 個索引：
+
+  hash = "a3b5c7d9" | "e1f2a3b4" | "c5d6e7f8" | "91a2b3c4"
+         segment_0    segment_1    segment_2    segment_3
+
+  CREATE INDEX idx_ia_seg0 ON identity_anchors(face_seg_0);
+  CREATE INDEX idx_ia_seg1 ON identity_anchors(face_seg_1);
+  CREATE INDEX idx_ia_seg2 ON identity_anchors(face_seg_2);
+  CREATE INDEX idx_ia_seg3 ON identity_anchors(face_seg_3);
+
+查詢流程：
+  1. 拆查詢 hash 為 4 段
+  2. 任何一段完全匹配 → 進入候選人列表
+  3. 只對候選人算全 128-bit 漢明距離
+  4. 400 萬 → 縮小到 ~100 候選人 → 微秒級完成
+
+原理：真正相似的 hash 至少有一段 segment 完全相同
+     （128 bit 差 20 bit，平均每段差 5 bit，
+      4 段中至少 1 段 0 差異的機率很高）
+
+萬級用戶階段：直接全表掃描也只需毫秒，不需要 bucket
+百萬級以上：必須啟用 bucket indexing
+```
 
 ### LSH 配置
 
@@ -341,7 +386,34 @@ CREATE TABLE registration_rate_limits (
 confidence = face_similarity * 0.6 + behavior_similarity * 0.4
 
 face_similarity = 1 - (hamming_distance / total_bits)
+  例：128-bit hash，漢明距離 12 → 1 - 12/128 = 0.906
+
 behavior_similarity = 1 - (hamming_distance / total_bits)
+  例：64-bit hash，漢明距離 8 → 1 - 8/64 = 0.875
+```
+
+### 完整查詢流程
+
+```
+VPS 收到 lookup 請求：
+  face_lsh_hash = "a3b5..." (128 bits)
+  behavior_lsh_hash = "c7d9..." (64 bits)
+
+1. Bucket Indexing 快速篩選：
+   拆 face hash 為 4 段 → 索引查詢 → 候選人列表（~100 人）
+
+2. 每個候選人算漢明距離：
+   候選人 1：
+     face 漢明距離 = 12/128 → face_sim = 0.906
+     behavior 漢明距離 = 8/64 → behavior_sim = 0.875
+     confidence = 0.906 × 0.6 + 0.875 × 0.4 = 0.894 ✅
+
+   候選人 2：
+     face 漢明距離 = 58/128 → face_sim = 0.547
+     behavior 漢明距離 = 30/64 → behavior_sim = 0.531
+     confidence = 0.547 × 0.6 + 0.531 × 0.4 = 0.541 ❌
+
+3. 取 confidence 最高且 >= 0.80 → 返回 encrypted_blob
 ```
 
 ### 判定邏輯
