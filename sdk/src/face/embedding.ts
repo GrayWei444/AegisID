@@ -14,7 +14,7 @@
  * - 足夠區分不同人（>99% 準確率@0.6 閾值）
  */
 
-import { devLog } from '../../utils/devLog';
+import { devLog } from '../utils/devLog';
 import type {
   FaceLandmark,
   FaceEmbedding,

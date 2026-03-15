@@ -8,7 +8,7 @@
  * 使用 onnxruntime-web WASM 後端，懶載入 + Service Worker 快取
  */
 
-import { devLog, devWarn } from '../../utils/devLog';
+import { devLog, devWarn } from '../utils/devLog';
 import { CNN_EMBEDDING_DIM } from './types';
 import type { BoundingBox, SpoofDetectionResult } from './types';
 

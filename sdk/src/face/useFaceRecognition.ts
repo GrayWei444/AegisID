@@ -15,28 +15,28 @@ import {
   initFaceLandmarker,
   detectFace,
   extractFaceGeometry,
-} from '../services/faceRecognition/faceMesh';
+} from './faceMesh';
 import {
   ActiveLivenessDetector,
   PassiveLivenessDetector,
-} from '../services/faceRecognition/liveness';
+} from './liveness';
 import {
   cosineSimilarity,
   computeStableEmbedding,
   computeStableCnnEmbedding,
   computeEmbeddingConsistency,
-} from '../services/faceRecognition/embedding';
+} from './embedding';
 import {
   initCnnModels,
   isCnnReady,
   extractCnnEmbedding,
   detectSpoof,
   closeCnnModels,
-} from '../services/faceRecognition/cnnInference';
+} from './cnnInference';
 import {
   saveFaceEmbedding,
   getFaceEmbedding,
-} from '../services/faceRecognition/storage';
+} from './storage';
 import type {
   FaceDetectionStatus,
   FaceEmbedding,
@@ -45,7 +45,7 @@ import type {
   LivenessResult,
   AntiSpoofResult,
   SpoofDetectionResult,
-} from '../services/faceRecognition/types';
+} from './types';
 
 // ============================================================================
 // Constants

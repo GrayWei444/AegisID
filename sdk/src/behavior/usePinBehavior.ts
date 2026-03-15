@@ -8,15 +8,17 @@ import { devLog } from '../utils/devLog';
  */
 
 import { useCallback, useRef, useState } from 'react';
-import {
+import type {
   PinTouchData,
   PinKeypress,
   PinInputRawData,
   PinBehaviorFingerprint,
   EmulatorDetectionResult,
+} from './behaviorFingerprint';
+import {
   calculateFingerprint,
   detectEmulatorOrBot,
-} from '../services/behaviorFingerprint';
+} from './behaviorFingerprint';
 import { MotionCollector } from '../services/motionSensor';
 
 interface UsePinBehaviorReturn {

@@ -5,7 +5,7 @@
  * 被動活體偵測（登入）：背景偵測自然眨眼和微動，無感進行
  */
 
-import { devLog } from '../../utils/devLog';
+import { devLog } from '../utils/devLog';
 import type {
   FaceGeometry,
   LivenessChallenge,

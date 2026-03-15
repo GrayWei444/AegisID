@@ -1,0 +1,67 @@
+{
+  "name": "@aegisrd/aegisid",
+  "version": "0.1.0",
+  "description": "AegisID SDK — Anonymous identity verification with CNN FaceID, PIN behavior fingerprint, and LSH matching",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./face": {
+      "types": "./dist/face/index.d.ts",
+      "import": "./dist/face/index.js"
+    },
+    "./behavior": {
+      "types": "./dist/behavior/index.d.ts",
+      "import": "./dist/behavior/index.js"
+    },
+    "./lsh": {
+      "types": "./dist/lsh/index.d.ts",
+      "import": "./dist/lsh/index.js"
+    },
+    "./identity": {
+      "types": "./dist/identity/index.d.ts",
+      "import": "./dist/identity/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "models"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.18",
+    "onnxruntime-web": "^1.24.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "react": "^18.3.1",
+    "typescript": "^5.7.3"
+  },
+  "keywords": [
+    "aegis",
+    "identity",
+    "face-recognition",
+    "behavior-fingerprint",
+    "lsh",
+    "anti-spoof",
+    "liveness-detection"
+  ],
+  "license": "UNLICENSED",
+  "private": true
+}

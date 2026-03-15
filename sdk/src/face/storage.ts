@@ -11,7 +11,7 @@
  */
 
 import * as db from '../database';
-import { devLog, devWarn } from '../../utils/devLog';
+import { devLog, devWarn } from '../utils/devLog';
 import type { FaceEmbedding, StoredFaceEmbedding } from './types';
 
 // ============================================================================

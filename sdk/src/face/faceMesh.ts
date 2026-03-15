@@ -6,7 +6,7 @@
  */
 
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { devLog } from '../../utils/devLog';
+import { devLog } from '../utils/devLog';
 import type { FaceLandmark, FaceGeometry } from './types';
 
 // ============================================================================

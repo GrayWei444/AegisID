@@ -217,7 +217,7 @@ export function compareLSHHash(
 // Behavior Fingerprint → LSH Feature Vector
 // ============================================================================
 
-import type { PinBehaviorFingerprint } from './behaviorFingerprint';
+import type { PinBehaviorFingerprint } from '../behavior/behaviorFingerprint';
 
 /**
  * PIN 行為指紋的 LSH 配置 (Phase 25 升級: 8→20 維, 32→64 bit)
