@@ -351,6 +351,34 @@ export function computePinLSHHash(fingerprint: PinBehaviorFingerprint): LSHHashR
 }
 
 // ============================================================================
+// Face Embedding → LSH Feature Vector
+// ============================================================================
+
+/**
+ * Face 嵌入向量的 LSH 配置
+ *
+ * CNN MobileFaceNet 產生 512 維 embedding
+ * 使用 128-bit hash（比 PIN 的 64-bit 更大，因為維度更高）
+ */
+export const FACE_LSH_CONFIG: LSHConfig = {
+  dimensions: 512,
+  numBits: 128,     // 128 位 hash
+  seed: 20260314,   // 不同於 PIN 的種子
+};
+
+/**
+ * 從 Face embedding 計算 LSH Hash
+ *
+ * embedding 已經是 L2-normalized 的 512 維向量，
+ * 不需要額外正規化，直接作為 LSH 輸入。
+ */
+export function computeFaceLSHHash(embedding: Float32Array): LSHHashResult {
+  const featureVector = Array.from(embedding);
+  const featureNames = featureVector.map((_, i) => `face_dim_${i}`);
+  return computeLSHHash(featureVector, featureNames, FACE_LSH_CONFIG);
+}
+
+// ============================================================================
 // Formatting for Display
 // ============================================================================
 

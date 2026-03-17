@@ -55,6 +55,7 @@ export {
   extractCnnEmbedding,
   detectSpoof,
   closeCnnModels,
+  resetBboxSmoothing,
 } from './cnnInference';
 
 // Storage

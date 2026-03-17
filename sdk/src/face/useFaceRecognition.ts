@@ -136,6 +136,9 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
   const spoofVotesRef = useRef<SpoofDetectionResult[]>([]);
   const cnnRunningRef = useRef(false); // 防止同時跑兩次 CNN
 
+  // Verify mode: 被動活體已通過但 CNN 尚未就緒，持續等待
+  const livenessPassedRef = useRef(false);
+
   // =========================================================================
   // Camera Management
   // =========================================================================
@@ -144,32 +147,37 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     try {
       setStatusAndRef('loading');
 
-      // 並行初始化：相機 + MediaPipe + CNN 模型
-      const initResults = await Promise.allSettled([
+      // 先啟動相機 + MediaPipe（必須），CNN 在背景載入（不阻塞相機啟動）
+      const [cameraResult, mediapipeResult] = await Promise.allSettled([
         navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
         }),
         initFaceLandmarker(),
-        initCnnModels(),
       ]);
 
       // 相機是必須的
-      if (initResults[0].status === 'rejected') {
-        throw initResults[0].reason;
+      if (cameraResult.status === 'rejected') {
+        throw cameraResult.reason;
       }
       // MediaPipe 是必須的
-      if (initResults[1].status === 'rejected') {
-        throw initResults[1].reason;
-      }
-      // CNN 是可選的（fallback 到 landmark embedding）
-      if (initResults[2].status === 'fulfilled') {
-        setCnnReady(true);
-        devLog('[FaceRec] CNN models ready');
-      } else {
-        devWarn('[FaceRec] CNN models failed to load, using landmark fallback:', initResults[2].reason);
+      if (mediapipeResult.status === 'rejected') {
+        throw mediapipeResult.reason;
       }
 
-      const stream = initResults[0].value as MediaStream;
+      // CNN 模型在背景載入（13MB+，不阻塞相機啟動）
+      if (!isCnnReady()) {
+        initCnnModels().then(() => {
+          setCnnReady(true);
+          devLog('[FaceRec] CNN models ready (background)');
+        }).catch((err) => {
+          devWarn('[FaceRec] CNN models failed to load:', err);
+        });
+      } else {
+        setCnnReady(true);
+        devLog('[FaceRec] CNN models already cached');
+      }
+
+      const stream = cameraResult.value as MediaStream;
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -442,9 +450,12 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     // Phase 26b: 邊偵測邊擷取 CNN embedding
     maybeCnnCapture(video, geometry, now, null);
 
-    const passed = detector.processFrame(geometry);
+    // 檢查被動活體是否已通過（包含之前已通過但等 CNN 的情況）
+    const passed = livenessPassedRef.current || detector.processFrame(geometry);
 
     if (passed) {
+      livenessPassedRef.current = true;
+
       // 使用 CNN embedding（已在被動偵測期間收集）
       if (cnnEmbeddingsRef.current.length > 0) {
         capturedEmbeddingRef.current = computeStableCnnEmbedding(cnnEmbeddingsRef.current);
@@ -454,26 +465,26 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
         return;
       }
 
-      // Fallback: landmark embedding
-      if (capturedFramesRef.current.length < CAPTURE_FRAMES) {
-        capturedFramesRef.current.push(landmarks);
-        setStatusAndRef('capturing');
+      // CNN 尚未就緒 → 繼續等待（不 fallback 到 landmark）
+      if (!isCnnReady()) {
+        devLog('[FaceRec] Liveness passed but CNN not ready, waiting...');
+        return;
       }
 
-      if (capturedFramesRef.current.length >= CAPTURE_FRAMES) {
-        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
-        setLivenessResult(detector.getResult());
-        devLog('[FaceRec] Passive liveness passed, landmark fallback embedding captured');
-      }
+      // CNN 就緒但尚未擷取到 embedding → 繼續跑下一個 CNN cycle
+      devLog('[FaceRec] Liveness passed, CNN ready but no embedding yet, waiting...');
       return;
     }
 
-    // 檢查超時
+    // 檢查超時（被動活體未通過 + 超時）
     if (detector.isTimedOut()) {
+      if (cnnEmbeddingsRef.current.length > 0) {
+        capturedEmbeddingRef.current = computeStableCnnEmbedding(cnnEmbeddingsRef.current);
+      }
       setLivenessResult(detector.getResult());
       devLog('[FaceRec] Passive liveness timeout — degrading to PIN-only');
     }
-  }, [maybeCnnCapture]);
+  }, [maybeCnnCapture, setStatusAndRef]);
 
   // =========================================================================
   // Save / Verify Embedding
@@ -558,6 +569,7 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     cnnEmbeddingsRef.current = [];
     spoofVotesRef.current = [];
     cnnRunningRef.current = false;
+    livenessPassedRef.current = false;
     lastCnnTimestampRef.current = 0;
   }, [stopCamera]);
 

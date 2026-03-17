@@ -100,9 +100,18 @@ export {
   PIN_FEATURE_NAMES,
   extractPinLSHFeatures,
   computePinLSHHash,
+  FACE_LSH_CONFIG,
+  computeFaceLSHHash,
   formatLSHHashForDisplay,
   formatCompareResultForDisplay,
 } from './lsh';
+
+// ============================================================================
+// Database Adapter
+// ============================================================================
+
+export type { DatabaseAdapter } from './database';
+export { setDatabaseAdapter } from './database';
 
 // ============================================================================
 // Identity (Device Fingerprinting)

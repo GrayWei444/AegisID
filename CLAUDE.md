@@ -103,45 +103,31 @@ AegisID 身份 = CNN FaceID (512維) + PIN 行為指紋 (18維)
 
 ```
 AegisID/
-├── api/                               # VPS API
-│   ├── main.py                        # FastAPI endpoints
-│   ├── database.py                    # 三表 SQLite
-│   ├── hmac_service.py                # HMAC token（6 個 secret）
-│   ├── rate_limiter.py                # 防批量建號
-│   ├── confidence.py                  # 聯合信心分數
-│   ├── cleanup.py                     # 48hr 清除 cron
-│   └── tests/
-│
-├── sdk/                               # 客戶端 SDK
+├── sdk/                               # 客戶端 SDK (@aegisrd/aegisid)
 │   └── src/
-│       ├── face/                      # CNN 臉部辨識
+│       ├── database.ts                # ✅ DatabaseAdapter 注入（宿主提供 SQLite）
+│       ├── index.ts                   # ✅ 主匯出
+│       │
+│       ├── face/                      # ✅ CNN 臉部辨識
 │       │   ├── cnnInference.ts        # ONNX 推論 (MobileFaceNet + MiniFASNet)
 │       │   ├── embedding.ts           # Landmark embedding (降級 fallback)
 │       │   ├── faceMesh.ts            # MediaPipe wrapper
 │       │   ├── liveness.ts            # 活體偵測
-│       │   ├── storage.ts             # 加密儲存
+│       │   ├── storage.ts             # 加密儲存（使用 DatabaseAdapter）
 │       │   ├── types.ts               # 型別
 │       │   ├── index.ts               # 匯出
 │       │   └── useFaceRecognition.ts  # React hook
 │       │
-│       ├── behavior/                  # PIN 行為指紋
-│       │   ├── behaviorFingerprint.ts # 特徵計算 (→重構為18維)
+│       ├── behavior/                  # ✅ PIN 行為指紋
+│       │   ├── behaviorFingerprint.ts # 特徵計算 (18維)
 │       │   └── usePinBehavior.ts      # React hook
 │       │
-│       ├── lsh/                       # LSH 系統
-│       │   └── lshFingerprint.ts      # LSH hash + 比對
+│       ├── lsh/                       # ✅ LSH 系統
+│       │   ├── lshFingerprint.ts      # LSH hash + Face LSH + PIN LSH + 比對
+│       │   └── index.ts              # 匯出
 │       │
-│       ├── identity/                  # 身份管理
-│       │   ├── deviceFingerprint.ts   # 裝置指紋
-│       │   ├── identityBlob.ts        # 加密/解密身份包 (待建)
-│       │   └── aegisId.ts             # 主服務入口 (待建)
-│       │
-│       └── credit/                    # 信用系統
-│           └── creditToken.ts         # 信用 token (待建)
-│
-├── components/                        # React UI
-│   ├── FixedPinKeypad.tsx             # 固定尺寸鍵盤 (待建)
-│   └── ...
+│       └── identity/                  # 身份管理
+│           └── deviceFingerprint.ts   # ✅ 裝置指紋
 │
 ├── models/                            # ONNX 模型
 │   ├── face_recognition.onnx          # MobileFaceNet (13MB)
@@ -150,6 +136,14 @@ AegisID/
 ├── docs/
 └── tools/
 ```
+
+**注意：** VPS API 端點（`/aegisid/register`、`/aegisid/lookup`）目前整合在 AegisTalk 的 `api/main.py` 中，尚未分離為獨立 AegisID API。身份包加解密由 AegisTalk 的 `identityAnchor.ts` 處理。
+
+**待建模組：**
+- `identity/identityBlob.ts` — 加密/解密身份包（目前在 AegisTalk 端）
+- `identity/aegisId.ts` — 主服務入口
+- `credit/creditToken.ts` — 信用 token
+- `components/FixedPinKeypad.tsx` — 固定尺寸鍵盤
 
 ---
 
@@ -196,11 +190,22 @@ AEGISID_CLIENT_CREDIT_SECRET  — 客戶端信用 HMAC
 
 | 來源 | 目標 | 狀態 |
 |------|------|------|
-| faceRecognition/*.ts | sdk/src/face/ | ✅ 已複製 |
-| behaviorFingerprint.ts | sdk/src/behavior/ | ✅ 已複製，需重構 |
-| lshFingerprint.ts | sdk/src/lsh/ | ✅ 已複製，需更新 |
-| deviceFingerprint.ts | sdk/src/identity/ | ✅ 已複製 |
+| faceRecognition/*.ts | sdk/src/face/ | ✅ 已遷移 + 建置通過 |
+| behaviorFingerprint.ts | sdk/src/behavior/ | ✅ 已遷移 |
+| lshFingerprint.ts | sdk/src/lsh/ | ✅ 已遷移 + 新增 Face LSH |
+| deviceFingerprint.ts | sdk/src/identity/ | ✅ 已遷移 |
 | ONNX 模型 | models/ | ✅ 已複製 |
+
+### AegisTalk 整合狀態（已完成）
+
+| 整合項目 | 狀態 | 說明 |
+|---------|------|------|
+| SDK import | ✅ | `@aegisrd/aegisid` (file-based local package) |
+| DatabaseAdapter 注入 | ✅ | `main.tsx` 呼叫 `setDatabaseAdapter()` |
+| Face LSH | ✅ | `computeFaceLSHHash()` — 512 維 → 128-bit hash |
+| PIN LSH | ✅ | `computePinLSHHash()` — 20 維 → 64-bit hash |
+| VPS 身份錨點 | ✅ | `identityAnchor.ts` + `/aegisid/register` + `/aegisid/lookup` |
+| AuthScreen 整合 | ✅ | 註冊完成後非阻塞上傳 LSH + 加密身份包 |
 
 ### Git 版本控制
 

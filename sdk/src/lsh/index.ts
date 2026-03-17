@@ -19,6 +19,8 @@ export {
   PIN_FEATURE_NAMES,
   extractPinLSHFeatures,
   computePinLSHHash,
+  FACE_LSH_CONFIG,
+  computeFaceLSHHash,
   formatLSHHashForDisplay,
   formatCompareResultForDisplay,
 } from './lshFingerprint';
