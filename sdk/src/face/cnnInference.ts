@@ -39,6 +39,9 @@ let faceSession: OrtSession | null = null;
 let spoofSession: OrtSession | null = null;
 let isInitializing = false;
 let initPromise: Promise<void> | null = null;
+let cnnInitFailed = false;
+let cnnInitAttempts = 0;
+const CNN_MAX_RETRIES = 3;
 
 // Separate canvases for face embedding and anti-spoof preprocessing
 // (avoid shared canvas resize 112↔128 causing GPU-backed pixel corruption)
@@ -98,26 +101,104 @@ const MP_RIGHT_MOUTH = 291;
 // ============================================================================
 
 /**
- * 懶載入 ONNX Runtime + 雙模型
+ * iOS Safari/WKWebView 記憶體修正
  *
- * 並行載入兩個模型，總計 ~14MB（首次下載，之後 Service Worker 快取）
+ * ORT v1.24.3 JS glue 在 module import 時建立：
+ *   WebAssembly.Memory({initial:256, maximum:65536, shared:true})
+ * = 4GB 虛擬位址空間。Safari 會預先保留 maximum → iPhone ≤4GB RAM 直接 OOM。
+ *
+ * 解法：import ORT 前 monkey-patch WebAssembly.Memory，限制 maximum。
+ * 我們的模型只需 ~50-100MB（14MB 模型 + ORT runtime），256MB 上限綽綽有餘。
  */
+const IOS_WASM_MAX_PAGES = 4096; // 4096 × 64KB = 256MB
+
+function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /iP(hone|od|ad)/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+type MemoryDescriptor = { initial: number; maximum?: number; shared?: boolean };
+
+function patchWasmMemoryForIOS(): typeof WebAssembly.Memory | null {
+  if (!isIOSDevice()) return null;
+
+  const OrigMemory = WebAssembly.Memory;
+  const patchedCtor = function PatchedMemory(
+    this: WebAssembly.Memory,
+    desc: MemoryDescriptor
+  ): WebAssembly.Memory {
+    // Cap maximum at 256MB (was 4GB)
+    const patched: MemoryDescriptor = desc.maximum && desc.maximum > IOS_WASM_MAX_PAGES
+      ? { ...desc, maximum: IOS_WASM_MAX_PAGES }
+      : { ...desc };
+
+    try {
+      return new OrigMemory(patched);
+    } catch (err) {
+      // SharedArrayBuffer unavailable (no COOP/COEP headers) → non-shared fallback
+      if (patched.shared) {
+        devLog('[CNN] Shared memory failed, trying non-shared');
+        const { shared: _, ...nonSharedDesc } = patched;
+        return new OrigMemory(nonSharedDesc as MemoryDescriptor);
+      }
+      throw err;
+    }
+  } as unknown as typeof WebAssembly.Memory;
+
+  // Preserve prototype chain
+  patchedCtor.prototype = OrigMemory.prototype;
+  (WebAssembly as { Memory: typeof WebAssembly.Memory }).Memory = patchedCtor;
+
+  devLog(`[CNN] iOS: patched WebAssembly.Memory maximum=${IOS_WASM_MAX_PAGES} (${IOS_WASM_MAX_PAGES * 64 / 1024}MB)`);
+  return OrigMemory;
+}
+
+function restoreWasmMemory(orig: typeof WebAssembly.Memory | null): void {
+  if (orig) {
+    (WebAssembly as { Memory: typeof WebAssembly.Memory }).Memory = orig;
+    devLog('[CNN] iOS: restored original WebAssembly.Memory');
+  }
+}
+
+/**
+ * 判斷是否為暫時性錯誤（fetch 失敗、SW 快取未就緒等）
+ * 只有 OOM 是永久性失敗
+ */
+function isTransientError(err: unknown): boolean {
+  const msg = String(err);
+  // OOM 是永久性的 — 這台裝置記憶體不夠
+  if (msg.includes('Out of memory') || msg.includes('RangeError')) return false;
+  // Fetch 失敗、MIME type 錯誤、WASM compile 失敗 — 暫時性，SW 快取就緒後可能成功
+  return true;
+}
+
 export async function initCnnModels(): Promise<void> {
   if (faceSession && spoofSession) return;
   if (initPromise) return initPromise;
+  // 已確認永久性失敗（如 OOM），不再重試
+  if (cnnInitFailed) return;
 
   isInitializing = true;
+  cnnInitAttempts++;
 
   initPromise = (async () => {
+    // iOS 記憶體修正：必須在 import ORT 之前 patch（ORT 在 module 載入時建立 Memory）
+    const origMemory = patchWasmMemoryForIOS();
+
     try {
       const startTime = Date.now();
-      devLog('[CNN] Initializing ONNX Runtime + models...');
+      devLog(`[CNN] Initializing ONNX Runtime + models... (attempt ${cnnInitAttempts}/${CNN_MAX_RETRIES})`);
 
-      // 動態載入 onnxruntime-web
-      ortModule = await import('onnxruntime-web');
+      // 動態載入 onnxruntime-web（此時 WebAssembly.Memory 已被 patch）
+      if (!ortModule) {
+        ortModule = await import('onnxruntime-web');
 
-      // 設定 WASM 後端
-      ortModule.env.wasm.numThreads = 1;
+        // 設定 WASM 後端 — 禁用 threads（iOS WKWebView 不穩定）
+        // wasmPaths 指向 /wasm/ 避免 Vite hash 造成 ORT 找不到檔案
+        ortModule.env.wasm.numThreads = 1;
+        ortModule.env.wasm.wasmPaths = '/wasm/';
+      }
 
       // 並行載入兩個模型
       const [face, spoof] = await Promise.all([
@@ -141,13 +222,22 @@ export async function initCnnModels(): Promise<void> {
       spoofCtx = spoofCanvas.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
 
       const elapsed = Date.now() - startTime;
-      devLog(`[CNN] Initialized in ${elapsed}ms`);
+      devLog(`[CNN] Initialized in ${elapsed}ms (attempt ${cnnInitAttempts})`);
     } catch (err) {
-      devWarn('[CNN] Initialization failed:', err);
+      devWarn(`[CNN] Initialization failed (attempt ${cnnInitAttempts}):`, err);
       initPromise = null;
+
+      if (!isTransientError(err) || cnnInitAttempts >= CNN_MAX_RETRIES) {
+        // 永久性失敗 或 重試次數用完
+        cnnInitFailed = true;
+        devWarn(`[CNN] Permanently failed after ${cnnInitAttempts} attempts`);
+      }
+      // 暫時性失敗且還有重試次數 → 不設 cnnInitFailed，讓下次呼叫可以重試
+
       throw err;
     } finally {
       isInitializing = false;
+      restoreWasmMemory(origMemory);
     }
   })();
 
@@ -162,6 +252,11 @@ export function isCnnReady(): boolean {
 /** CNN 模型是否正在初始化 */
 export function isCnnInitializing(): boolean {
   return isInitializing;
+}
+
+/** CNN 模型初始化是否已失敗（如 iOS OOM） */
+export function isCnnFailed(): boolean {
+  return cnnInitFailed;
 }
 
 // ============================================================================
@@ -286,6 +381,30 @@ function cropAndPreprocessAligned(
   // 讀取像素
   const imageData = faceCtx.getImageData(0, 0, targetSize, targetSize);
   const pixels = imageData.data;
+
+  // Hair/Hat Mask: 消除帽子/頭髮對 embedding 的影響
+  // 根據 debug crop 實際觀察：帽子佔 y=0~30，眉毛在 y≈42
+  // 對上方做 soft fade to neutral gray (127.5 → 0.0 in normalized space)
+  // 註冊和驗證都套用同樣 mask，確保比較公平
+  const MASK_FULL = 25;      // y < 25: 完全遮罩
+  const MASK_FADE_END = 40;  // y 25~40: 線性漸變；y >= 40: 原始像素
+  const FADE_RANGE = MASK_FADE_END - MASK_FULL;
+
+  for (let y = 0; y < targetSize; y++) {
+    if (y >= MASK_FADE_END) break;
+    let w: number;
+    if (y < MASK_FULL) {
+      w = 0.0;
+    } else {
+      w = (y - MASK_FULL) / FADE_RANGE;
+    }
+    for (let x = 0; x < targetSize; x++) {
+      const idx = (y * targetSize + x) * 4;
+      pixels[idx + 0] = Math.round(127.5 + (pixels[idx + 0] - 127.5) * w);
+      pixels[idx + 1] = Math.round(127.5 + (pixels[idx + 1] - 127.5) * w);
+      pixels[idx + 2] = Math.round(127.5 + (pixels[idx + 2] - 127.5) * w);
+    }
+  }
 
   // InsightFace ArcFace 標準預處理：RGB, (pixel - 127.5) / 127.5 → [-1, +1]
   const chw = new Float32Array(3 * targetSize * targetSize);

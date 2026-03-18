@@ -52,6 +52,7 @@ export {
   initCnnModels,
   isCnnReady,
   isCnnInitializing,
+  isCnnFailed,
   extractCnnEmbedding,
   detectSpoof,
   closeCnnModels,

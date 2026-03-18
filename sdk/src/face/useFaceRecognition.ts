@@ -29,6 +29,7 @@ import {
 import {
   initCnnModels,
   isCnnReady,
+  isCnnFailed,
   extractCnnEmbedding,
   detectSpoof,
   closeCnnModels,
@@ -401,14 +402,12 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
         return;
       }
 
-      // Fallback: landmark embedding（CNN 不可用）
-      capturedFramesRef.current.push(landmarks);
-      if (capturedFramesRef.current.length >= CAPTURE_FRAMES) {
-        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
-        setLivenessResult(detector.getResult());
-        isRunningRef.current = false;
-        devLog('[FaceRec] Landmark fallback embedding captured');
-      }
+      // CNN 載入失敗 → 跳過臉部註冊（不 fallback 到 landmark）
+      // 128-dim landmark vs 512-dim CNN 無法比對，fallback 只會導致後續驗證永遠失敗
+      devWarn('[FaceRec] CNN unavailable — skipping face registration');
+      setStatusAndRef('failed');
+      setLivenessResult(detector.getResult());
+      isRunningRef.current = false;
       return;
     }
 
@@ -445,6 +444,15 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     const detector = passiveDetectorRef.current;
     if (!detector) return;
 
+    // CNN 已確認無法載入（如 iOS OOM）→ 直接跳過臉部驗證
+    if (isCnnFailed() && cnnEmbeddingsRef.current.length === 0) {
+      devWarn('[FaceRec] CNN failed — skipping face verify');
+      setLivenessResult(detector.getResult());
+      setStatusAndRef('capturing');
+      isRunningRef.current = false;
+      return;
+    }
+
     setStatusAndRef('face_detected');
 
     // Phase 26b: 邊偵測邊擷取 CNN embedding
@@ -465,9 +473,12 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
         return;
       }
 
-      // CNN 尚未就緒 → 繼續等待（不 fallback 到 landmark）
+      // CNN 不可用 → 跳過（不 fallback 到 landmark）
       if (!isCnnReady()) {
-        devLog('[FaceRec] Liveness passed but CNN not ready, waiting...');
+        devWarn('[FaceRec] CNN unavailable — skipping face verify');
+        setLivenessResult(detector.getResult());
+        setStatusAndRef('capturing');
+        isRunningRef.current = false;
         return;
       }
 
@@ -482,7 +493,7 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
         capturedEmbeddingRef.current = computeStableCnnEmbedding(cnnEmbeddingsRef.current);
       }
       setLivenessResult(detector.getResult());
-      devLog('[FaceRec] Passive liveness timeout — degrading to PIN-only');
+      devLog('[FaceRec] Passive liveness timeout — skipping face verify');
     }
   }, [maybeCnnCapture, setStatusAndRef]);
 
