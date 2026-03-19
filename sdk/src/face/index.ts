@@ -64,6 +64,7 @@ export {
   saveFaceEmbedding,
   getFaceEmbedding,
   hasFaceEnrolled,
+  ensureFaceStorageSync,
   clearFaceData,
   getStoredFaceEmbeddingRaw,
   restoreFaceEmbedding,

@@ -155,6 +155,31 @@ export function hasFaceEnrolled(): boolean {
 }
 
 /**
+ * iOS Safari PWA 會在記憶體壓力或 7 天未用時清除 localStorage。
+ * 此函數從 SQLite 恢復 face embedding 到 localStorage，
+ * 確保 hasFaceEnrolled() 同步檢查仍然有效。
+ *
+ * 應在 App 啟動時（database ready 後）呼叫。
+ */
+export async function ensureFaceStorageSync(): Promise<void> {
+  // localStorage 已有 → 不需要同步
+  if (localStorage.getItem(STORAGE_KEY)) return;
+
+  try {
+    const json = await db.getSetting(STORAGE_KEY);
+    if (json && json.length > 2) {
+      // 驗證 JSON 格式正確
+      JSON.parse(json);
+      localStorage.setItem(STORAGE_KEY, json);
+      console.error('[FaceStorage] Restored face embedding from SQLite → localStorage (iOS recovery)');
+    }
+  } catch (e) {
+    // 靜默失敗 — 不影響 App 啟動
+    devWarn('[FaceStorage] SQLite → localStorage sync failed:', e);
+  }
+}
+
+/**
  * 清除臉部資料
  */
 export async function clearFaceData(): Promise<void> {
@@ -169,9 +194,17 @@ export async function clearFaceData(): Promise<void> {
 
 /**
  * 取得加密的 embedding 原始資料（用於 QR 傳輸，Phase 27）
+ * 改為 async 以支援 SQLite fallback（iOS localStorage 被清除時）
  */
-export function getStoredFaceEmbeddingRaw(): StoredFaceEmbedding | null {
-  const json = localStorage.getItem(STORAGE_KEY);
+export async function getStoredFaceEmbeddingRaw(): Promise<StoredFaceEmbedding | null> {
+  let json = localStorage.getItem(STORAGE_KEY);
+  if (!json) {
+    try {
+      json = await db.getSetting(STORAGE_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  }
   if (!json) return null;
   try {
     return JSON.parse(json) as StoredFaceEmbedding;

@@ -221,6 +221,29 @@ export async function initCnnModels(): Promise<void> {
       spoofCanvas = new OffscreenCanvas(SPOOF_INPUT_SIZE, SPOOF_INPUT_SIZE);
       spoofCtx = spoofCanvas.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
 
+      // Warm-up inference：ONNX WASM 首次推論會初始化內部記憶體/計算圖緩衝區
+      // 未 warm-up 的首幀推論可能產生垃圾 embedding → 拉低平均值 → 驗證失敗
+      // （已觀察到 sim=0.329 的案例：登出後首次驗證失敗，重試成功）
+      try {
+        const dummyFace = new Float32Array(3 * FACE_INPUT_SIZE * FACE_INPUT_SIZE);
+        const warmupFaceTensor = new ortModule.Tensor('float32', dummyFace, [1, 3, FACE_INPUT_SIZE, FACE_INPUT_SIZE]);
+        const faceResult = await faceSession.run({ [FACE_INPUT_NAME]: warmupFaceTensor as unknown as OrtTensor });
+        (warmupFaceTensor as unknown as OrtTensor).dispose();
+        const faceOutKey = Object.keys(faceResult)[0];
+        if (faceOutKey) faceResult[faceOutKey].dispose();
+
+        const dummySpoof = new Float32Array(3 * SPOOF_INPUT_SIZE * SPOOF_INPUT_SIZE);
+        const warmupSpoofTensor = new ortModule.Tensor('float32', dummySpoof, [1, 3, SPOOF_INPUT_SIZE, SPOOF_INPUT_SIZE]);
+        const spoofResult = await spoofSession.run({ [SPOOF_INPUT_NAME]: warmupSpoofTensor as unknown as OrtTensor });
+        (warmupSpoofTensor as unknown as OrtTensor).dispose();
+        const spoofOutKey = Object.keys(spoofResult)[0];
+        if (spoofOutKey) spoofResult[spoofOutKey].dispose();
+
+        devLog('[CNN] Warm-up inference complete');
+      } catch (warmupErr) {
+        devWarn('[CNN] Warm-up inference failed (non-fatal):', warmupErr);
+      }
+
       const elapsed = Date.now() - startTime;
       devLog(`[CNN] Initialized in ${elapsed}ms (attempt ${cnnInitAttempts})`);
     } catch (err) {
