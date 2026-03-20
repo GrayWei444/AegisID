@@ -84,14 +84,32 @@ AegisID 身份 = CNN FaceID (512維) + PIN 行為指紋 (18維)
 - 引擎：onnxruntime-web WASM 後端
 - 模型位置：`models/face_recognition.onnx` (13MB) + `models/anti_spoof.onnx` (612KB)
 - 只保留 CNN 版本，Landmark 128 維已廢棄
+- CNN 作為輔助驗證（cosine similarity），不用於唯一 ID
 
-### 2.4 PIN 行為指紋
+### 2.4 唯一臉部 ID（研究中）
+
+**目標**: 同一個人不管怎麼掃臉，ID 永遠相同。不是模糊匹配，是確定性唯一。
+
+```
+傳統: f(臉A, 臉B) → similarity > threshold → 通過
+AegisID: f(同一張臉, 任意條件) → 永遠相同的 hash ID
+```
+
+**技術路線**:
+- 影像正規化: ArcFace align → gray → histEq → 橢圓遮罩 (SSIM 0.993 ✅)
+- 骨骼比率: 67 個 MediaPipe landmark 比率，篩選穩定子集 → 量化 → hash
+- pHash 4×4: 快速預篩 (100% exact match ✅)
+- 深度路線: ❌ 已放棄（穩定性 26%）
+
+詳見: `docs/UNIQUE-FACE-ID.md`, `docs/BONE-RATIO-SYSTEM.md`, `docs/IMAGE-NORMALIZATION.md`
+
+### 2.5 PIN 行為指紋
 
 - 18 維全比率/模式特徵（移除所有裝置相關絕對值）
 - 固定鍵盤尺寸 280×360px（讓位置特徵跨裝置穩定）
 - LSH 64-bit hash
 
-### 2.5 LSH (Locality-Sensitive Hashing)
+### 2.6 LSH (Locality-Sensitive Hashing)
 
 - Random Hyperplane LSH
 - 固定 seed 確保可重現
@@ -134,7 +152,14 @@ AegisID/
 │   └── anti_spoof.onnx               # MiniFASNetV2SE (612KB)
 │
 ├── docs/
-└── tools/
+│   ├── UNIQUE-FACE-ID.md              # 唯一臉部 ID 核心設計文件
+│   ├── BONE-RATIO-SYSTEM.md           # 67 骨骼比率系統（完整定義+篩選方法）
+│   ├── IMAGE-NORMALIZATION.md         # 影像正規化演算法（已驗證 SSIM 0.993）
+│   ├── face-structure-id-research.md  # 完整研究過程記錄
+│   └── PRIVACY.md                     # 隱私設計文件
+│
+├── tools/
+│   └── face-id-test.html              # 測試頁面原始碼
 ```
 
 **注意：** VPS API 端點（`/aegisid/register`、`/aegisid/lookup`）目前整合在 AegisTalk 的 `api/main.py` 中，尚未分離為獨立 AegisID API。身份包加解密由 AegisTalk 的 `identityAnchor.ts` 處理。

@@ -1,7 +1,8 @@
 # AegisID 開發路線圖
 
-> **版本**: 0.1.0
+> **版本**: 0.2.0
 > **建立日期**: 2026-03-14
+> **最後更新**: 2026-03-20
 > **定位**: AegisRD 生態系匿名身份認證系統
 
 ---
@@ -10,7 +11,8 @@
 
 | Phase | 名稱 | 預估時間 | 狀態 | 依賴 |
 |-------|------|----------|------|------|
-| **Phase 1** | 專案建置 + CNN 遷移 | 1-2 天 | ✅ 進行中 | - |
+| **Phase 1** | 專案建置 + CNN 遷移 | 1-2 天 | ✅ 完成 | - |
+| **Phase 1.5** | 唯一臉部 ID 研究 | 持續 | 🔄 進行中 | Phase 1 |
 | **Phase 2** | CNN 跨鏡頭穩定性驗證 | 2-3 天 | ⏳ | Phase 1 |
 | **Phase 3** | PIN 行為指紋重新設計 | 3-5 天 | ⏳ | Phase 1 |
 | **Phase 4** | 固定尺寸 PIN 鍵盤 | 1-2 天 | ⏳ | Phase 3 |
@@ -25,8 +27,6 @@
 | **Phase 13** | 跨裝置恢復流程 | 3-5 天 | ⏳ | Phase 12 |
 | **Phase 14** | LINE PWA 註冊流程 | 3-5 天 | ⏳ | Phase 13 |
 | **Phase 15** | 穩定性調優 + 閾值校準 | 3-5 天 | ⏳ | Phase 14 |
-
-**總預估時間**: 34-53 天
 
 ---
 
@@ -69,7 +69,60 @@
 - [x] 目錄結構建立
 - [x] 所有源碼複製完成
 - [x] ONNX 模型複製完成
-- [ ] TypeScript 編譯通過
+- [x] TypeScript 編譯通過 ✅
+
+---
+
+## Phase 1.5: 唯一臉部 ID 研究 🔄 進行中
+
+**目標**: 讓同一個人不管怎麼掃臉，ID 永遠相同。不是模糊匹配，是確定性唯一身份。
+
+**核心差異**: 傳統辨識是 `similarity > threshold → 通過`（模糊），AegisID 要的是 `f(同一張臉) → 永遠相同的 hash`（確定性）。
+
+### 已完成
+
+- [x] 影像正規化管線研究 — ArcFace align → gray → histEq → 橢圓遮罩
+- [x] 正規化管線驗證 — SSIM avg 0.993, pHash 4×4 100% exact match
+- [x] 深度路線評估 — Depth Anything V2 + Laplacian 曲率場 → ❌ 放棄（穩定性 26%）
+- [x] pHash 穩定性測試 — 4×4 (15bit) 100% stable, 8×8 (63bit) 2-4 bit drift
+- [x] 骨骼比率初始測試 — 12 比率，10/12 穩定 (83%)
+- [x] 骨骼比率擴充 — 12 → 30 → 67 個比率
+- [x] SDK 模組建立 — `structuralId.ts` 正規化管線已實作
+- [x] 測試頁面 — https://aegisrd.com/face-id-test/
+- [x] 文件建立 — UNIQUE-FACE-ID.md, BONE-RATIO-SYSTEM.md, IMAGE-NORMALIZATION.md
+
+### 進行中
+
+- [ ] 67 比率 L1 穩定性測試（頭不動連拍）
+- [ ] 不穩定比率識別與淘汰
+- [ ] 轉頭穩定性測試（±10°, ±20°）
+- [ ] 不同距離穩定性測試
+- [ ] 不同裝置穩定性測試
+- [ ] 最終穩定比率子集確定
+- [ ] bin width 最佳化
+- [ ] 區分力驗證（不同人測試）
+- [ ] 組合 hash 策略確定（pHash + 骨骼比率）
+- [ ] `structuralId.ts` 完整實作
+
+### 關鍵發現
+
+1. **背景是最大干擾源** — 橢圓遮罩消除背景後 SSIM 從 ~0.85 提升到 0.993
+2. **全局 histEq 優於 CLAHE** — CLAHE 分區處理反而扭曲五官邊界
+3. **不需要 Gaussian blur** — SSIM 0.993 已經夠穩定，模糊反而丟資訊
+4. **深度路線不可行** — 單目深度推論不確定性太大，曲率場二階微分放大誤差
+5. **骨骼比率有潛力** — 83% 穩定，擴充後篩選可望提高
+6. **策略轉向：大量擴充後篩選** — 67 比率覆蓋所有面部區域，測試後保留穩定子集
+
+### 相關文件
+
+| 文件 | 內容 |
+|------|------|
+| `docs/UNIQUE-FACE-ID.md` | 核心設計文件 |
+| `docs/BONE-RATIO-SYSTEM.md` | 67 骨骼比率完整定義 |
+| `docs/IMAGE-NORMALIZATION.md` | 正規化演算法規格 |
+| `docs/face-structure-id-research.md` | 研究過程完整記錄 |
+| `sdk/src/face/structuralId.ts` | SDK 模組 |
+| `tools/face-id-test.html` | 測試頁面 |
 
 ---
 

@@ -117,25 +117,93 @@ export function normalizeAlignedFace(alignedImg: ImageData): GrayImage {
 }
 
 // ============================================================
-// Structural Features (TODO — research in progress)
+// Structural Features — 骨骼比率系統
 // ============================================================
 
 /**
- * 骨骼比率特徵（MediaPipe 468 landmarks）
- * TODO: 確定穩定的比率子集和最佳 bin width
+ * 骨骼比率類別
+ * @see docs/BONE-RATIO-SYSTEM.md
  */
-export interface BoneRatios {
-  [key: string]: number;
+export type BoneRatioCategory =
+  | 'F'   // 臉部整體比例
+  | 'EL'  // 左眼
+  | 'ER'  // 右眼
+  | 'B'   // 眉毛
+  | 'N'   // 鼻子
+  | 'M'   // 嘴巴
+  | 'J'   // 下顎顴骨
+  | 'X';  // 交叉特徵
+
+/**
+ * 單一骨骼比率定義
+ */
+export interface BoneRatioDefinition {
+  readonly id: string;
+  readonly category: BoneRatioCategory;
+  readonly name: string;
+  readonly landmarkIndices: readonly number[];
+}
+
+/**
+ * 骨骼比率計算結果
+ */
+export interface BoneRatioResult {
+  readonly id: string;
+  readonly value: number;
+  readonly binIndex: number;
+  readonly stable: boolean;
 }
 
 /**
  * pHash 感知 hash（DCT）
- * TODO: 確定最佳 DCT 大小（4×4 穩定但區分力不足，8×8 區分力夠但不穩定）
+ * 4×4 (15bit) = 100% stable, 區分力不足 → 用作快速預篩
+ * 8×8 (63bit) = 2-4 bit drift → 暫不使用
  */
 export interface PHash {
-  bits: string;
-  hex: string;
-  nBits: number;
+  readonly bits: string;
+  readonly hex: string;
+  readonly nBits: number;
+}
+
+/**
+ * Face Structure ID 完整結果
+ */
+export interface FaceStructureIdResult {
+  readonly hash: string;
+  readonly pHash4x4: PHash;
+  readonly stableBoneRatios: readonly BoneRatioResult[];
+  readonly totalRatiosTested: number;
+  readonly stableCount: number;
+}
+
+/** Bin width for bone ratio quantization */
+export const DEFAULT_BIN_WIDTH = 0.05;
+
+/** 67 骨骼比率的 MediaPipe landmark 對應 — 待比率篩選完成後填入完整定義 */
+export const BONE_RATIO_COUNT = 67;
+
+/**
+ * 計算骨骼比率
+ * TODO: 等穩定比率子集確定後，只計算穩定的那些
+ *
+ * @param landmarks MediaPipe 468 landmarks (ArcFace aligned 座標)
+ * @param binWidth 量化 bin 寬度，預設 0.05
+ */
+export function computeBoneRatios(
+  _landmarks: readonly { x: number; y: number; z: number }[],
+  _binWidth: number = DEFAULT_BIN_WIDTH,
+): readonly BoneRatioResult[] {
+  // TODO: 等 67 比率穩定性測試完成，保留穩定子集後實作
+  throw new Error('Not implemented — bone ratio stability testing in progress. See docs/BONE-RATIO-SYSTEM.md');
+}
+
+/**
+ * 計算 pHash 4×4（快速預篩用）
+ * TODO: 實作 DCT 32×32 → 4×4 低頻 → median threshold → 15 bit hash
+ */
+export function computePHash4x4(_gray: GrayImage): PHash {
+  // TODO: 實作
+  throw new Error('Not implemented — see docs/UNIQUE-FACE-ID.md');
 }
 
 /**
@@ -145,11 +213,16 @@ export interface PHash {
  * 目標：
  *   同一人 → 永遠相同的 SHA-256 hash
  *   不同人 → 永遠不同的 SHA-256 hash
+ *
+ * 組合策略：pHash 4×4 (15bit) + 穩定骨骼比率 bins → SHA-256
+ *
+ * @see docs/UNIQUE-FACE-ID.md
+ * @see docs/BONE-RATIO-SYSTEM.md
  */
 export async function computeStructuralId(
   _alignedImg: ImageData,
-  _landmarks: unknown,
-): Promise<string> {
+  _landmarks: readonly { x: number; y: number; z: number }[],
+): Promise<FaceStructureIdResult> {
   // TODO: 特徵提取 + 量化 + hash
   throw new Error('Not implemented — research in progress. See docs/UNIQUE-FACE-ID.md');
 }
