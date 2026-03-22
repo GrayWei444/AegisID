@@ -17,7 +17,7 @@
 | 資料 | 說明 |
 |------|------|
 | Ed25519 私鑰 | 用 PIN 加密後存本地 |
-| CNN face embedding (512維 float) | AES 加密存本地 |
+| 正面骨骼 bins (24 bin indices) | 登入比對基準，只存本機 |
 | PIN 明文 | 只在記憶體中存在 |
 | PIN hash/salt | 本地 Argon2id |
 | 行為 baseline (18維 float) | 存在加密身份包中 |
@@ -26,8 +26,8 @@
 
 | 資料 | 型態 | 可反推？ | 壽命 |
 |------|------|---------|------|
-| face_lsh_hash | LSH hash | 不可反推臉部 | 永久 |
-| behavior_lsh_hash | LSH hash | 不可反推行為 | 永久 |
+| face_structure_hash | SHA-256 | 不可反推臉部（量化 bin 不可逆） | 永久 |
+| fraud_risk_score | float | 風險分數，跟著唯一 ID | 永久 |
 | encrypted_blob | AES-256-GCM 密文 | 需 PIN 才能解密 | 永久 |
 | credit_token | HMAC hash | 不可反推 pubkey | 永久 |
 | ip_token | HMAC hash | 不可反推 IP | 48hr |
@@ -47,18 +47,16 @@
 ## 三表分離的數學保證
 
 ```
-identity_anchors 表的 key:   face_lsh_hash（LSH 輸入 = face embedding）
-credit_scores 表的 key:      HMAC(pubkey_hash, credit_secret)
+identity_anchors 表的 key:   face_structure_hash（SHA-256 of 骨骼比率 bins）
+credit_scores 表的 key:      face_structure_hash（同一張臉 = 同一個風險分數）
 rate_limits 表的 key:        HMAC(各維度 hash, dimension_secret)
 
-三者的 input 完全不同：
-  face embedding ≠ pubkey_hash ≠ ip_hash
+注意：identity_anchors 和 credit_scores 現在共用 face_structure_hash 作為 key。
+這是有意設計 — 詐騙風險分數必須跟著唯一臉部 ID 走。
+但 rate_limits 仍使用獨立 HMAC secret，無法關聯。
 
-三者的 HMAC secret 完全不同：
-  (無 secret) ≠ credit_secret ≠ secret_ip/device/face/behavior
-
-結論：即使取得所有三張表 + 所有 secret，
-      也無法找到三張表之間的共同記錄。
+安全性：face_structure_hash 是 SHA-256(量化 bin indices)，
+        24 個 bin index 無法反推出原始臉部結構。
 ```
 
 ---
@@ -68,8 +66,8 @@ rate_limits 表的 key:        HMAC(各維度 hash, dimension_secret)
 ### 場景 1：只取得資料庫
 
 攻擊者看到：
-- N 行 (face_lsh_hash, behavior_lsh_hash, encrypted_blob)
-- M 行 (credit_token, risk_score)
+- N 行 (face_structure_hash, encrypted_blob)
+- M 行 (face_structure_hash, fraud_risk_score)
 - K 行 (token, dimension, count)（最多 48hr 資料）
 
 攻擊者不能：

@@ -4,31 +4,33 @@
 
 AegisID 是 AegisRD 生態系的身份層，提供：
 
-- **身份唯一性** — CNN FaceID + PIN 行為指紋聯合認證
-- **匿名信用** — 累積交易信用，不洩露真實身份
-- **防批量建號** — 多維度 rate limiting，48 小時自動清除
-- **跨裝置恢復** — 刷臉 + PIN 即可在新裝置恢復帳號
+- **唯一臉部 ID** — 骨骼比率 3D hash，同一人永遠同一個 ID
+- **匿名信用** — 詐騙風險分數跟著臉走，不洩露真實身份
+- **防批量建號** — 唯一 ID O(1) 查重 + rate limiting
+- **跨裝置恢復** — 轉頭掃臉 → 唯一 ID → VPS 查表 → 恢復帳號
+- **日常登入** — 平面刷臉 + Anti-spoof + PIN 三層驗證
 
 ## 核心原則
 
 | 能做到 | 不能做到 |
 |--------|----------|
 | 知道 Session A 和 Session B 是同一人 | 知道這個人是誰 |
-| 知道這個人的信用分數 | 從資料反推真實身份 |
-| 知道這個人是真人 | 跨表關聯不同維度的記錄 |
+| 知道這個人的詐騙風險分數 | 從資料反推真實身份 |
+| 知道這個人是真人（anti-spoof） | 跨表關聯不同維度的記錄 |
 | 阻擋深偽、雙胞胎、機器人 | 獲取用戶名字/電話/Email |
 
 ## 技術架構
 
 ```
-客戶端 SDK (TypeScript)          VPS API (Python FastAPI)
-┌─────────────────────┐        ┌──────────────────┐
-│ CNN FaceID 512維     │        │ identity_anchors │ ← 身份查找
-│ PIN 行為指紋 18維    │  HTTP  │ credit_scores    │ ← 信用累積
-│ LSH 模糊匹配        │ ────→ │ rate_limits      │ ← 防濫用(48hr)
-│ 身份包加密/解密      │ ←──── │                  │
-│ 活體偵測            │        │ 三表分離，不可關聯 │
-└─────────────────────┘        └──────────────────┘
+客戶端 SDK (TypeScript)               VPS API (Python FastAPI)
+┌───────────────────────────┐        ┌──────────────────────┐
+│ 骨骼比率臉部辨識（統一系統）│        │ identity_anchors     │
+│  註冊: 3D 掃描 → 唯一 ID  │  HTTP  │  face_structure_hash │ ← 唯一 ID
+│  登入: 平面 → bin match   │ ────→ │  encrypted_blob      │ ← 加密身份包
+│ Anti-spoof 防偽           │ ←──── │ credit_scores        │ ← 詐騙風險分數
+│ PIN 行為指紋 18維         │        │ rate_limits          │ ← 防濫用(48hr)
+│ 身份包加密/解密           │        │                      │
+└───────────────────────────┘        └──────────────────────┘
 ```
 
 ## 專案結構
@@ -38,19 +40,17 @@ AegisID/
 ├── README.md
 ├── CLAUDE.md              # AI 助手開發指南
 ├── ROADMAP.md             # 開發階段規劃
-├── HANDOVER.md            # 架構決策記錄
-├── api/                   # VPS API (Python FastAPI)
+├── HANDOVER.md            # 架構決策記錄（ADR-001~016）
 ├── sdk/                   # 客戶端 SDK (TypeScript)
 │   └── src/
-│       ├── face/          # CNN 臉部辨識（從 AegisTalk Phase 26 遷移）
-│       ├── behavior/      # PIN 行為指紋（18 維重新設計）
-│       ├── lsh/           # LSH 模糊匹配
+│       ├── face/          # 骨骼比率臉部辨識 + Anti-spoof
+│       ├── behavior/      # PIN 行為指紋（18 維）
+│       ├── lsh/           # LSH 匹配
 │       ├── identity/      # 身份包加密/裝置指紋
 │       └── credit/        # 信用 token
-├── components/            # React UI 元件
-├── models/                # ONNX 模型
+├── models/                # ONNX 模型（anti-spoof）
 ├── docs/                  # 設計文件
-└── tools/                 # 測試工具
+└── tools/                 # 測試工具（face-id-test.html v14）
 ```
 
 ## 快速開始

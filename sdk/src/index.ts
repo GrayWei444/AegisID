@@ -2,7 +2,7 @@
  * AegisID SDK — Anonymous Identity Verification
  *
  * Modules:
- * - face:     CNN FaceID (512-dim embedding) + MediaPipe liveness detection + anti-spoof
+ * - face:     骨骼比率臉部辨識 + MediaPipe liveness detection + MiniFASNet anti-spoof
  * - behavior: PIN behavior fingerprinting (18-dim) + emulator/bot detection
  * - lsh:      Locality-Sensitive Hashing for cross-session behavior matching
  * - identity: Device fingerprinting (canvas/webgl/audio hash) for same-device detection
@@ -29,7 +29,7 @@ export type {
   SpoofDetectionResult,
 } from './face';
 
-export { CNN_EMBEDDING_DIM, LANDMARK_EMBEDDING_DIM } from './face';
+export { LANDMARK_EMBEDDING_DIM } from './face';
 
 export {
   initFaceLandmarker,
@@ -43,13 +43,17 @@ export {
   extractFaceEmbedding,
   cosineSimilarity,
   computeStableEmbedding,
-  computeStableCnnEmbedding,
   computeEmbeddingConsistency,
+  initAntiSpoofModel,
   initCnnModels,
+  isAntiSpoofReady,
   isCnnReady,
+  isAntiSpoofInitializing,
   isCnnInitializing,
-  extractCnnEmbedding,
+  isAntiSpoofFailed,
+  isCnnFailed,
   detectSpoof,
+  closeAntiSpoofModel,
   closeCnnModels,
   saveFaceEmbedding,
   getFaceEmbedding,
@@ -60,6 +64,7 @@ export {
 } from './face';
 
 export { useFaceRecognition } from './face/useFaceRecognition';
+export type { UseFaceRecognitionOptions, VerifyFaceResult } from './face/useFaceRecognition';
 
 // ============================================================================
 // Behavior Fingerprint

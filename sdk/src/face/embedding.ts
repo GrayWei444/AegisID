@@ -287,48 +287,7 @@ export function computeStableEmbedding(
 }
 
 // ============================================================================
-// Phase 26b: CNN Embedding Averaging
-// ============================================================================
-
-/**
- * 從多幀 CNN embedding 計算穩定 embedding（取平均 + L2 正規化）
- *
- * 與 computeStableEmbedding 的差異：接受任意維度的 Float32Array[]，
- * 不需要先從 landmarks 提取
- */
-export function computeStableCnnEmbedding(
-  embeddings: Float32Array[]
-): FaceEmbedding {
-  if (embeddings.length === 0) {
-    throw new Error('No CNN embeddings provided');
-  }
-
-  const dim = embeddings[0].length;
-  const avg = new Float32Array(dim);
-
-  for (const emb of embeddings) {
-    for (let i = 0; i < dim; i++) {
-      avg[i] += emb[i];
-    }
-  }
-  for (let i = 0; i < dim; i++) {
-    avg[i] /= embeddings.length;
-  }
-
-  // L2 正規化
-  const norm = Math.sqrt(avg.reduce((s, v) => s + v * v, 0));
-  if (norm > 0) {
-    for (let i = 0; i < dim; i++) {
-      avg[i] /= norm;
-    }
-  }
-
-  devLog('[Embedding] Computed stable CNN embedding from', embeddings.length, 'frames, dim:', dim);
-  return avg;
-}
-
-// ============================================================================
-// Phase 26b: Embedding Consistency Analysis
+// Embedding Consistency Analysis
 // ============================================================================
 
 /**

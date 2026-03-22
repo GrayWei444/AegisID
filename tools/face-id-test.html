@@ -3,848 +3,3312 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AegisID — Face Structure ID v7</title>
+<title>AegisID — Face Structure ID v15 — IPD-Normalized Bone Ratios</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'SF Mono',Menlo,monospace;background:#08080c;color:#c8c8d0;padding:12px}
 h1{text-align:center;margin-bottom:4px;font-size:1.2em;color:#00e5ff;letter-spacing:2px}
 .sub{text-align:center;color:#555;margin-bottom:12px;font-size:.75em}
-.wrap{max-width:900px;margin:0 auto}
+.wrap{max-width:960px;margin:0 auto}
 video{width:280px;height:210px;border-radius:6px;border:2px solid #1a1a2a;transform:scaleX(-1);background:#000}
 #bar{text-align:center;padding:6px;margin-bottom:10px;border-radius:5px;font-size:.82em;background:#0d0d1f;color:#ffc107;border:1px solid #2a2a00;word-break:break-all}
 .btns{text-align:center;margin-bottom:10px}
 button{background:#00e5ff;color:#000;border:none;padding:8px 18px;border-radius:5px;font-size:.85em;cursor:pointer;margin:3px;font-weight:700;font-family:inherit}
 button:disabled{background:#222;color:#444;cursor:not-allowed}
+button.primary{background:#0f0;color:#000;font-size:.95em;padding:10px 28px}
+button.verify{background:#ffc107;color:#000}
 .card{background:#0c0c14;border:1px solid #1a1a2a;border-radius:7px;padding:10px;margin-bottom:8px}
 .card h3{color:#00e5ff;margin-bottom:6px;font-size:.85em}
 .pipeline{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .stage{text-align:center}
 .stage canvas{border:1px solid #222;border-radius:4px;image-rendering:pixelated;background:#000;width:70px;height:70px}
 .stage .lbl{color:#555;font-size:.6em;margin-top:2px}
-.hr{display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:.72em}
-.hr .lb{min-width:60px;color:#555}
-.hr .hv{background:#111118;padding:2px 6px;border-radius:3px;word-break:break-all;flex:1;color:#888}
 .mt{color:#0f0;font-weight:700}.df{color:#f44;font-weight:700}.cn{color:#ffc107;font-weight:700}
+
+/* Unique ID display */
+#uid-box{display:none;text-align:center;padding:18px;margin:12px 0;background:#0a1a0a;border:2px solid #0f0;border-radius:10px}
+#uid-box.mismatch{background:#1a0a0a;border-color:#f44}
+#uid-label{font-size:.7em;color:#555;margin-bottom:4px}
+#uid-hash{font-size:1.05em;color:#0f0;word-break:break-all;letter-spacing:1px;line-height:1.5}
+#uid-box.mismatch #uid-hash{color:#f44}
+#uid-stats{font-size:.72em;color:#888;margin-top:8px}
+#uid-stats span{margin:0 8px}
+
+/* Progress bar */
+#progress{display:none;margin:10px 0}
+#progress-bar{height:6px;background:#1a1a2a;border-radius:3px;overflow:hidden}
+#progress-fill{height:100%;background:#00e5ff;width:0;transition:width .3s}
+#progress-text{text-align:center;font-size:.7em;color:#555;margin-top:4px}
+
+/* Ratio stability table */
+#ratio-detail{display:none;margin-top:10px}
+.ratio-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:4px;font-size:.65em}
+.ratio-cell{padding:4px;border-radius:3px;text-align:center}
+.ratio-cell.stable{background:#0a1a0a;color:#0f0;border:1px solid #0a3a0a}
+.ratio-cell.boundary{background:#1a1a0a;color:#ffc107;border:1px solid #3a3a0a}
+.ratio-cell.unstable{background:#1a0a0a;color:#f44;border:1px solid #3a0a0a}
+.ratio-cell.excluded{background:#0a0a0a;color:#555;border:1px solid #1a1a1a}
+
+/* Multi-test results */
+#multi-result{display:none;margin:10px 0}
+.round-row{display:flex;gap:8px;align-items:center;padding:4px 8px;font-size:.75em;border-bottom:1px solid #1a1a2a}
+.round-row .rn{min-width:60px;color:#00e5ff;font-weight:700}
+.round-row .rh{flex:1;color:#888;word-break:break-all;font-size:.9em}
+.round-row.match .rh{color:#0f0}
+.round-row.diff .rh{color:#f44}
+.multi-summary{padding:12px;background:#0c0c14;border:1px solid #1a1a2a;border-radius:8px;margin-top:8px;font-size:.75em}
+.drift-list{color:#f44;margin-top:6px;font-size:.9em}
+.drift-list span{display:inline-block;background:#1a0a0a;padding:2px 6px;border-radius:3px;margin:2px}
+.ratio-cell .rv{font-size:.85em;color:#555}
+
+/* Verify results */
+#verify-box{display:none;text-align:center;padding:14px;margin:8px 0;border-radius:8px}
+#verify-box.match{background:#0a1a0a;border:2px solid #0f0}
+#verify-box.fail{background:#1a0a0a;border:2px solid #f44}
+
 .stab{text-align:center;margin-top:12px;padding:14px;background:#0c0c14;border:1px solid #1a1a2a;border-radius:8px}
 .row3{display:flex;justify-content:center;gap:24px;flex-wrap:wrap}
 .pct{font-size:1.8em;font-weight:800}.pct.g{color:#0f0}.pct.m{color:#ffc107}.pct.b{color:#f44}
 .sm{color:#555;font-size:.7em}
 #log{background:#111;color:#0f0;font-size:.65em;padding:8px;border-radius:4px;margin-top:8px;max-height:200px;overflow-y:auto;display:none;white-space:pre-wrap}
+
+/* Yaw coverage indicator */
+#yaw-indicator{display:none;margin:10px 0;padding:10px;background:#0c0c14;border:1px solid #1a1a2a;border-radius:7px}
+#yaw-track{position:relative;height:30px;background:#111;border-radius:4px;margin:6px 0;overflow:hidden}
+#yaw-track .zone{position:absolute;top:0;bottom:0;opacity:.15}
+#yaw-track .zone.left{left:0;width:33%;background:#a855f7}
+#yaw-track .zone.center{left:33%;width:34%;background:#00e5ff}
+#yaw-track .zone.right{left:67%;width:33%;background:#a855f7}
+#yaw-cursor{position:absolute;top:2px;bottom:2px;width:4px;background:#fff;border-radius:2px;transition:left .08s}
+.yaw-dot{position:absolute;width:4px;height:4px;border-radius:50%;top:50%;transform:translateY(-50%)}
+#yaw-counts{display:flex;justify-content:space-between;font-size:.65em;color:#888}
+#yaw-counts span{padding:2px 6px;border-radius:3px}
+#yaw-counts .full{color:#0f0;background:#0a1a0a}
+
+/* 3D Face visualization */
+#face3d-box{display:none;margin:10px 0}
+.face3d-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.face3d-view{text-align:center}
+.face3d-view canvas{border:1px solid #333;border-radius:6px;background:#08080c}
+.face3d-view .lbl{color:#888;font-size:.65em;margin-top:4px}
+#depth-legend{display:flex;align-items:center;justify-content:center;gap:6px;font-size:.6em;color:#888;margin-top:6px}
+#depth-bar{width:200px;height:10px;border-radius:3px;background:linear-gradient(to right,#0000ff,#00ffff,#00ff00,#ffff00,#ff0000)}
+
+/* Login test result */
+#login-result{display:none;margin:10px 0;padding:14px;border-radius:8px;border:2px solid #333}
+#login-result.pass{background:#0a1a0a;border-color:#0f0}
+#login-result.fail{background:#1a0a0a;border-color:#f44}
+#login-result.warn{background:#1a1a0a;border-color:#ffc107}
+
+/* Frontal ref indicator */
+#frontal-ref-badge{display:none;text-align:center;padding:6px;margin:6px 0;background:#0c1a0c;border:1px solid #1a3a1a;border-radius:5px;font-size:.7em;color:#0f0}
+
+/* PIN Keypad */
+#pin-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.88);z-index:1000;justify-content:center;align-items:center}
+#pin-container{background:#0c0c14;border:1px solid #1a1a2a;border-radius:12px;padding:20px;width:320px;text-align:center}
+#pin-title{color:#a855f7;font-size:.9em;font-weight:700;margin-bottom:6px}
+#pin-round{color:#888;font-size:.7em;margin-bottom:10px}
+#pin-display{height:40px;display:flex;justify-content:center;gap:12px;align-items:center;margin-bottom:12px}
+.pin-dot{width:14px;height:14px;border-radius:50%;background:#1a1a2a;border:2px solid #333;transition:.15s}
+.pin-dot.filled{background:#00e5ff;border-color:#00e5ff}
+#pin-status{font-size:.7em;color:#888;margin-bottom:10px;min-height:1.2em}
+#pin-keypad{width:280px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pin-key{background:#1a1a2a;color:#c8c8d0;border:1px solid #333;border-radius:8px;font-size:1.4em;font-weight:700;font-family:inherit;cursor:pointer;user-select:none;padding:16px 0;touch-action:manipulation}
+.pin-key:active{background:#00e5ff;color:#000}
+.pin-key.delete{background:#2a1a1a;color:#f44;font-size:1em}
+.pin-key.empty{background:transparent;border:none;cursor:default}
+#pin-cancel{margin-top:12px;background:none;border:1px solid #444;color:#888;border-radius:6px;padding:6px 20px;cursor:pointer;font-family:inherit;font-size:.75em}
+#pin-result-box{display:none;margin:10px 0;padding:14px;border-radius:8px;border:2px solid #333;background:#0c0c14}
+.pin-feature-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;font-size:.6em;margin:8px 0}
+.pin-feature-cell{padding:3px 6px;border-radius:3px;background:#111;border:1px solid #1a1a2a;display:flex;justify-content:space-between}
+.pin-feature-cell .fn{color:#888}.pin-feature-cell .fv{color:#0f0;font-weight:700}
+
+/* Swipe Gesture Test */
+#swipe-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.92);z-index:1000;flex-direction:column;align-items:center;padding:10px;overflow-y:auto}
+#swipe-header{color:#00e5ff;font-size:.9em;font-weight:700;margin-bottom:4px}
+#swipe-info{color:#888;font-size:.7em;margin-bottom:8px}
+#swipe-zone{position:relative;width:320px;min-width:320px;max-width:320px;height:480px;min-height:480px;max-height:480px;flex-shrink:0;background:linear-gradient(180deg,#0a0a2a,#1a0a2a);border-radius:16px;border:2px solid #333;overflow:hidden;touch-action:none;box-sizing:border-box}
+#swipe-zone canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.swipe-hint-text{position:absolute;bottom:40px;width:100%;text-align:center;color:#555;font-size:.9em;pointer-events:none}
+.swipe-bottom-bar{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);width:100px;height:4px;border-radius:2px;background:#444}
+#swipe-btns{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+#swipe-result-box{width:100%;max-width:360px;max-height:35vh;overflow-y:auto;margin-top:8px;font-size:.6em;background:#0c0c14;border:1px solid #1a1a2a;border-radius:8px;padding:8px}
+#swipe-vel-canvas{width:100%;max-width:360px;height:120px;background:#111;border-radius:6px;margin-top:6px}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>▣ AEGISID v7</h1>
-  <p class="sub">RGB: Align→Gray→CLAHE→Blur→Gabor/LBP | Depth: Align→Laplacian</p>
+  <h1>&#9635; AEGISID v15</h1>
+  <p class="sub">v15 IPD-Normalized | 24 Bone-Only Ratios | Weight-Resistant | SHA-256</p>
   <div id="bar">Click Start to load models</div>
   <div style="text-align:center;margin-bottom:10px"><video id="vid" autoplay playsinline></video></div>
   <div class="btns">
-    <button id="b1" onclick="doStart()">▶ Start</button>
-    <button id="b2" onclick="doCapture()" disabled>📸 Capture</button>
-    <button id="b3" onclick="doCapture5()" disabled>📸×5</button>
-    <button id="b4" onclick="doClear()" disabled>🗑 Clear</button>
-    <button onclick="document.getElementById('log').style.display=document.getElementById('log').style.display==='none'?'block':'none'">📋 Log</button>
+    <button id="b-start" onclick="doStart()">&#9654; Start</button>
+    <button id="b-3d-scan" class="primary" onclick="do3DVideoScan()" disabled>&#127916; 3D Register</button>
+    <button id="b-3d-multi" onclick="do3DMultiTest()" disabled style="background:#7c3aed;color:#fff">&#129513; 3D Multi (&times;3)</button>
+    <button id="b-login" onclick="doLoginTest()" disabled style="background:#ffc107;color:#000">&#128274; Login Test</button>
+    <button id="b-pin-test" onclick="doPinTest()" style="background:#a855f7;color:#fff">&#9000; PIN Reg</button>
+    <button id="b-pin-login" onclick="doPinLoginTest()" disabled style="background:#ffc107;color:#000">&#128274; PIN Login</button>
+    <button id="b-pin-multi" onclick="doPinMultiTest()" style="background:#e91e63;color:#fff">&#9000; PIN Reg&times;2</button>
+    <button id="b-touch-test" onclick="doTouchTest()" style="background:#06b6d4;color:#fff">&#9757; Touch Test</button>
+    <button onclick="doSwipeTest()" style="background:#0ea5e9;color:#fff">⬆ Swipe Test</button>
+    <button id="b-clear" onclick="doClear()" disabled>&#128465; Clear</button>
+    <button onclick="document.getElementById('log').style.display=document.getElementById('log').style.display==='none'?'block':'none'">&#128203; Log</button>
   </div>
+
+  <div id="yaw-indicator">
+    <div style="text-align:center;font-size:.7em;color:#00e5ff;font-weight:700" id="yaw-title">Slowly turn your head: LEFT &rarr; CENTER &rarr; RIGHT</div>
+    <div id="yaw-track">
+      <div class="zone left"></div>
+      <div class="zone center"></div>
+      <div class="zone right"></div>
+      <div id="yaw-cursor"></div>
+    </div>
+    <div id="yaw-counts">
+      <span id="yc-left">&#8592; Left: 0</span>
+      <span id="yc-center">Center: 0</span>
+      <span id="yc-right">Right: 0 &#8594;</span>
+    </div>
+  </div>
+
+  <div id="face3d-box">
+    <div style="text-align:center;color:#a855f7;font-weight:700;font-size:.85em;margin-bottom:6px">&#129513; Reconstructed 3D Face Model</div>
+    <div class="face3d-row">
+      <div class="face3d-view"><canvas id="face3d-front" width="260" height="300"></canvas><div class="lbl">Front View</div></div>
+      <div class="face3d-view"><canvas id="face3d-side" width="260" height="300"></canvas><div class="lbl">45&deg; Side View</div></div>
+      <div class="face3d-view"><canvas id="face3d-top" width="260" height="180"></canvas><div class="lbl">Top View</div></div>
+    </div>
+    <div id="depth-legend"><span>Far</span><div id="depth-bar"></div><span>Near</span></div>
+  </div>
+
+  <div id="progress"><div id="progress-bar"><div id="progress-fill"></div></div><div id="progress-text"></div></div>
+  <div id="multi-result"></div>
+  <div id="uid-box"><div id="uid-label">UNIQUE FACE ID</div><div id="uid-hash"></div><div id="uid-stats"></div></div>
+  <div id="frontal-ref-badge"></div>
+  <div id="login-result"></div>
+  <div id="pin-result-box"></div>
+  <div id="verify-box"></div>
+  <div id="ratio-detail"><h3 style="color:#00e5ff;margin-bottom:6px;font-size:.8em">Ratio Stability Detail</h3><div id="ratio-grid" class="ratio-grid"></div></div>
   <div id="res"></div>
   <div id="stab" class="stab" style="display:none"></div>
   <div id="log"></div>
 </div>
 
+<div id="pin-overlay">
+  <div id="pin-container">
+    <div id="pin-title">PIN Behavior Fingerprint</div>
+    <div id="pin-round">Round 1 / 2</div>
+    <div id="pin-display"></div>
+    <div id="pin-status">Enter 6-digit PIN</div>
+    <div id="pin-keypad"></div>
+    <button id="pin-cancel" onclick="hidePinOverlay()">Cancel</button>
+  </div>
+</div>
+
 <script>
 // ============================================================
-// GLOBALS — no heavy libs loaded yet
+// GLOBALS
 // ============================================================
-var fl=null,ds=null,ort=null,FaceLandmarker=null,FilesetResolver=null;
-var caps=[],ready=false;
-var vid=document.getElementById('vid');
+var fl = null, FaceLandmarker = null, FilesetResolver = null;
+var ready = false;
+var vid = document.getElementById('vid');
 
-function st(t,type){
-  var e=document.getElementById('bar');
-  e.textContent=t;
-  e.style.color=type==='ok'?'#0f0':type==='er'?'#f44':'#ffc107';
-  e.style.borderColor=type==='ok'?'#003300':type==='er'?'#330000':'#2a2a00';
+// Calibration state
+var calibrationData = null;
+var allCaptures = [];
+
+// Stored frontal reference (simulates local device storage for login)
+var storedFrontalRef = null;  // { bins: {ratio: bin}, ratios: {ratio: value}, hash3D: string }
+
+function st(t, type) {
+  var e = document.getElementById('bar');
+  e.textContent = t;
+  e.style.color = type === 'ok' ? '#0f0' : type === 'er' ? '#f44' : '#ffc107';
+  e.style.borderColor = type === 'ok' ? '#003300' : type === 'er' ? '#330000' : '#2a2a00';
   lg(t);
 }
-function lg(t){
-  var el=document.getElementById('log');
-  el.textContent+=new Date().toLocaleTimeString()+' '+t+'\n';
-  el.scrollTop=el.scrollHeight;
+function lg(t) {
+  var el = document.getElementById('log');
+  el.textContent += new Date().toLocaleTimeString() + ' ' + t + '\n';
+  el.scrollTop = el.scrollHeight;
 }
 
-window.onerror=function(m,s,l){st('Error: '+m+' L'+l,'er')};
-window.onunhandledrejection=function(e){st('Reject: '+(e.reason?.message||e.reason),'er')};
+window.onerror = function(m, s, l) { st('Error: ' + m + ' L' + l, 'er') };
+window.onunhandledrejection = function(e) { st('Reject: ' + (e.reason?.message || e.reason), 'er') };
 
-async function sha256(d){var b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(d));return Array.from(new Uint8Array(b)).map(function(x){return x.toString(16).padStart(2,'0')}).join('')}
+async function sha256hex(str) {
+  var b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(b)).map(function(x) { return x.toString(16).padStart(2, '0') }).join('');
+}
 
-function makeCanvas(w,h){
-  if(typeof OffscreenCanvas!=='undefined')return new OffscreenCanvas(w,h);
-  var c=document.createElement('canvas');c.width=w;c.height=h;return c;
+function makeCanvas(w, h) {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(w, h);
+  var c = document.createElement('canvas'); c.width = w; c.height = h; return c;
 }
 
 // ============================================================
-// START — lazy load everything
+// START
 // ============================================================
-async function doStart(){
-  document.getElementById('b1').disabled=true;
-  try{
-    // 1. Load MediaPipe
-    st('Loading MediaPipe FaceLandmarker...','ld');
-    var mp=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.mjs');
-    FaceLandmarker=mp.FaceLandmarker;
-    FilesetResolver=mp.FilesetResolver;
+async function doStart() {
+  document.getElementById('b-start').disabled = true;
+  try {
+    st('Loading MediaPipe FaceLandmarker...', 'ld');
+    var mp = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.mjs');
+    FaceLandmarker = mp.FaceLandmarker;
+    FilesetResolver = mp.FilesetResolver;
     lg('MediaPipe module imported');
 
-    var fr=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm');
-    fl=await FaceLandmarker.createFromOptions(fr,{
-      baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',delegate:'GPU'},
-      outputFaceBlendshapes:false,runningMode:'IMAGE',numFaces:1
+    var fr = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm');
+    fl = await FaceLandmarker.createFromOptions(fr, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task', delegate: 'GPU' },
+      outputFaceBlendshapes: false, outputFacialTransformationMatrixes: true, runningMode: 'IMAGE', numFaces: 1
     });
     lg('FaceLandmarker ready');
 
-    // 2. Depth model — lazy load on first capture to save memory
-    lg('Depth model will load on first capture');
-
-    // 3. Camera
-    st('Starting camera...','ld');
-    var stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}}});
-    vid.srcObject=stream;
+    st('Starting camera...', 'ld');
+    var stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } } });
+    vid.srcObject = stream;
     await vid.play();
-    lg('Camera started: '+vid.videoWidth+'x'+vid.videoHeight);
+    lg('Camera started: ' + vid.videoWidth + 'x' + vid.videoHeight);
 
-    ready=true;
-    document.getElementById('b2').disabled=false;
-    document.getElementById('b3').disabled=false;
-    document.getElementById('b4').disabled=false;
-    st('Ready — click Capture','ok');
-  }catch(e){
-    st('Init error: '+e.message,'er');
-    console.error(e);
+    ready = true;
+    enableButtons();
+    st('Ready — click 3D Scan for video-based 3D reconstruction', 'ok');
+  } catch (e) {
+    st('Init error: ' + e.message, 'er');
+    document.getElementById('b-start').disabled = false;
   }
-}
-
-function loadScript(url){
-  return new Promise(function(resolve,reject){
-    var s=document.createElement('script');
-    s.src=url;s.onload=resolve;s.onerror=function(){reject(new Error('Failed to load '+url))};
-    document.head.appendChild(s);
-  });
 }
 
 // ============================================================
 // ArcFace 5-point alignment
 // ============================================================
-var ARCFACE_REF=[[38.2946,51.6963],[73.5318,51.5014],[56.0252,71.7366],[41.5493,92.3655],[70.7299,92.2041]];
+var ARCFACE_REF = [[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366], [41.5493, 92.3655], [70.7299, 92.2041]];
 
-function getAlignPts(lm,vw,vh){
-  var le=[(lm[33].x+lm[133].x)/2*vw,(lm[33].y+lm[133].y)/2*vh];
-  var re=[(lm[263].x+lm[362].x)/2*vw,(lm[263].y+lm[362].y)/2*vh];
-  return[le,re,[lm[1].x*vw,lm[1].y*vh],[lm[61].x*vw,lm[61].y*vh],[lm[291].x*vw,lm[291].y*vh]];
+function getAlignPts(lm, vw, vh) {
+  var le = [(lm[33].x + lm[133].x) / 2 * vw, (lm[33].y + lm[133].y) / 2 * vh];
+  var re = [(lm[263].x + lm[362].x) / 2 * vw, (lm[263].y + lm[362].y) / 2 * vh];
+  return [le, re, [lm[1].x * vw, lm[1].y * vh], [lm[61].x * vw, lm[61].y * vh], [lm[291].x * vw, lm[291].y * vh]];
 }
 
-function simTransform(src,dst){
-  var N=src.length,S2=0,Sx=0,Sy=0,rA=0,rB=0,rE=0,rF=0;
-  for(var i=0;i<N;i++){
-    var sx=src[i][0],sy=src[i][1],dx=dst[i][0],dy=dst[i][1];
-    S2+=sx*sx+sy*sy;Sx+=sx;Sy+=sy;rA+=sx*dx+sy*dy;rB+=-sy*dx+sx*dy;rE+=dx;rF+=dy;
+function simTransform(src, dst) {
+  var N = src.length, S2 = 0, Sx = 0, Sy = 0, rA = 0, rB = 0, rE = 0, rF = 0;
+  for (var i = 0; i < N; i++) {
+    var sx = src[i][0], sy = src[i][1], dx = dst[i][0], dy = dst[i][1];
+    S2 += sx * sx + sy * sy; Sx += sx; Sy += sy; rA += sx * dx + sy * dy; rB += -sy * dx + sx * dy; rE += dx; rF += dy;
   }
-  var den=S2-(Sx*Sx+Sy*Sy)/N;
-  if(Math.abs(den)<1e-10)return{a:1,b:0,tx:0,ty:0};
-  var a=(rA-(Sx*rE+Sy*rF)/N)/den,b=(rB-(-Sy*rE+Sx*rF)/N)/den;
-  return{a:a,b:b,tx:(rE-Sx*a+Sy*b)/N,ty:(rF-Sy*a-Sx*b)/N};
+  var den = S2 - (Sx * Sx + Sy * Sy) / N;
+  if (Math.abs(den) < 1e-10) return { a: 1, b: 0, tx: 0, ty: 0 };
+  var a = (rA - (Sx * rE + Sy * rF) / N) / den, b = (rB - (-Sy * rE + Sx * rF) / N) / den;
+  return { a: a, b: b, tx: (rE - Sx * a + Sy * b) / N, ty: (rF - Sy * a - Sx * b) / N };
 }
 
-function arcfaceAlign(source,lm,size){
-  var vw=source.videoWidth||source.width,vh=source.videoHeight||source.height;
-  var t=simTransform(getAlignPts(lm,vw,vh),ARCFACE_REF);
-  var c=makeCanvas(size,size),ctx=c.getContext('2d');
-  ctx.setTransform(t.a,t.b,-t.b,t.a,t.tx,t.ty);
-  ctx.drawImage(source,0,0);
+function arcfaceAlign(source, lm, size) {
+  var vw = source.videoWidth || source.width, vh = source.videoHeight || source.height;
+  var t = simTransform(getAlignPts(lm, vw, vh), ARCFACE_REF);
+  var c = makeCanvas(size, size), ctx = c.getContext('2d');
+  ctx.setTransform(t.a, t.b, -t.b, t.a, t.tx, t.ty);
+  ctx.drawImage(source, 0, 0);
   ctx.resetTransform();
-  return ctx.getImageData(0,0,size,size);
+  return ctx.getImageData(0, 0, size, size);
 }
 
 // ============================================================
-// Image Normalization: Gray → CLAHE → Blur → MinMax
+// Image Normalization: Gray -> HistEq -> Face Mask
 // ============================================================
-function toGray(img){
-  var px=img.data,n=img.width*img.height,g=new Uint8Array(n);
-  for(var i=0;i<n;i++)g[i]=Math.round(.299*px[i*4]+.587*px[i*4+1]+.114*px[i*4+2]);
-  return{data:g,width:img.width,height:img.height};
+function toGray(img) {
+  var px = img.data, n = img.width * img.height, g = new Uint8Array(n);
+  for (var i = 0; i < n; i++) g[i] = Math.round(.299 * px[i * 4] + .587 * px[i * 4 + 1] + .114 * px[i * 4 + 2]);
+  return { data: g, width: img.width, height: img.height };
 }
 
-function clahe(g,clip,gw,gh){
-  clip=clip||2;gw=gw||8;gh=gh||8;
-  var d=g.data,w=g.width,h=g.height,out=new Uint8Array(d.length);
-  var tw=Math.floor(w/gw),th=Math.floor(h/gh);
-  var cdfs=[];
-  for(var ty=0;ty<gh;ty++){cdfs[ty]=[];for(var tx=0;tx<gw;tx++){
-    var hist=new Float32Array(256),cnt=0;
-    var y0=ty*th,y1=Math.min(y0+th,h),x0=tx*tw,x1=Math.min(x0+tw,w);
-    for(var y=y0;y<y1;y++)for(var x=x0;x<x1;x++){hist[d[y*w+x]]++;cnt++}
-    var lim=Math.max(1,Math.floor(clip*cnt/256)),ex=0;
-    for(var i=0;i<256;i++){if(hist[i]>lim){ex+=hist[i]-lim;hist[i]=lim}}
-    var inc=Math.floor(ex/256);for(var i=0;i<256;i++)hist[i]+=inc;
-    var cdf=new Float32Array(256);cdf[0]=hist[0];
-    for(var i=1;i<256;i++)cdf[i]=cdf[i-1]+hist[i];
-    var mn=cdf[0],mx=cdf[255],sc=mx>mn?255/(mx-mn):1;
-    for(var i=0;i<256;i++)cdf[i]=Math.round((cdf[i]-mn)*sc);
-    cdfs[ty][tx]=cdf;
-  }}
-  for(var y=0;y<h;y++){for(var x=0;x<w;x++){
-    var fy=y/th-.5,fx=x/tw-.5;
-    var t1=Math.max(0,Math.floor(fy)),t2=Math.min(gh-1,t1+1);
-    var l1=Math.max(0,Math.floor(fx)),l2=Math.min(gw-1,l1+1);
-    var wy=fy-t1,wx=fx-l1,v=d[y*w+x];
-    out[y*w+x]=Math.round((cdfs[t1][l1][v]*(1-wx)+cdfs[t1][l2][v]*wx)*(1-wy)+(cdfs[t2][l1][v]*(1-wx)+cdfs[t2][l2][v]*wx)*wy);
-  }}
-  return{data:out,width:w,height:h};
+function histEq(g) {
+  var d = g.data, w = g.width, h = g.height, n = w * h;
+  var hist = new Uint32Array(256);
+  for (var i = 0; i < n; i++) hist[d[i]]++;
+  var cdf = new Uint32Array(256);
+  cdf[0] = hist[0];
+  for (var i = 1; i < 256; i++) cdf[i] = cdf[i - 1] + hist[i];
+  var cdfMin = 0;
+  for (var i = 0; i < 256; i++) { if (cdf[i] > 0) { cdfMin = cdf[i]; break } }
+  var out = new Uint8Array(n);
+  var scale = 255 / (n - cdfMin || 1);
+  for (var i = 0; i < n; i++) out[i] = Math.round((cdf[d[i]] - cdfMin) * scale);
+  return { data: out, width: w, height: h };
 }
 
-function blur3(g){
-  var d=g.data,w=g.width,h=g.height,o=new Uint8Array(d.length);
-  for(var y=1;y<h-1;y++)for(var x=1;x<w-1;x++){
-    o[y*w+x]=(d[(y-1)*w+x-1]+2*d[(y-1)*w+x]+d[(y-1)*w+x+1]+2*d[y*w+x-1]+4*d[y*w+x]+2*d[y*w+x+1]+d[(y+1)*w+x-1]+2*d[(y+1)*w+x]+d[(y+1)*w+x+1])>>4;
-  }
-  for(var x=0;x<w;x++){o[x]=d[x];o[(h-1)*w+x]=d[(h-1)*w+x]}
-  for(var y=0;y<h;y++){o[y*w]=d[y*w];o[y*w+w-1]=d[y*w+w-1]}
-  return{data:o,width:w,height:h};
-}
-
-function normMinMax(g){
-  var d=g.data,o=new Uint8Array(d.length),mn=255,mx=0;
-  for(var i=0;i<d.length;i++){mn=Math.min(mn,d[i]);mx=Math.max(mx,d[i])}
-  var r=mx-mn||1;
-  for(var i=0;i<d.length;i++)o[i]=Math.round((d[i]-mn)/r*255);
-  return{data:o,width:g.width,height:g.height};
-}
-
-function normalize(img){
-  var g=toGray(img);
-  var eq=histEq(g);
-  var masked=applyFaceMask(eq);
-  return{final:masked, steps:{gray:g, eq:eq, masked:masked}};
-}
-
-// Simple global histogram equalization (not CLAHE)
-function histEq(g){
-  var d=g.data,w=g.width,h=g.height,n=w*h;
-  var hist=new Uint32Array(256);
-  for(var i=0;i<n;i++)hist[d[i]]++;
-  var cdf=new Uint32Array(256);
-  cdf[0]=hist[0];
-  for(var i=1;i<256;i++)cdf[i]=cdf[i-1]+hist[i];
-  var cdfMin=0;
-  for(var i=0;i<256;i++){if(cdf[i]>0){cdfMin=cdf[i];break}}
-  var out=new Uint8Array(n);
-  var scale=255/(n-cdfMin||1);
-  for(var i=0;i<n;i++)out[i]=Math.round((cdf[d[i]]-cdfMin)*scale);
-  return{data:out,width:w,height:h};
-}
-
-// Difference of Gaussians: subtract large-blur from small-blur
-// Result = only medium-frequency structure (edges, wrinkles, features)
-// Low-freq lighting → gone. High-freq noise → gone.
-function dog(g){
-  var small=gaussBlur(g,1.0);  // σ=1: keeps structure
-  var large=gaussBlur(g,4.0);  // σ=4: only lighting remains
-  var d=g.data,w=g.width,h=g.height;
-  var out=new Uint8Array(w*h);
-  for(var i=0;i<w*h;i++){
-    // small - large = structure without lighting, shift to 0-255
-    out[i]=Math.max(0,Math.min(255,small.data[i]-large.data[i]+128));
-  }
-  return{data:out,width:w,height:h};
-}
-
-// Gaussian blur with variable sigma (separable, two-pass)
-function gaussBlur(g,sigma){
-  var d=g.data,w=g.width,h=g.height;
-  var r=Math.ceil(sigma*3),ks=r*2+1;
-  // Build 1D kernel
-  var kern=new Float32Array(ks),sum=0;
-  for(var i=0;i<ks;i++){var x=i-r;kern[i]=Math.exp(-x*x/(2*sigma*sigma));sum+=kern[i]}
-  for(var i=0;i<ks;i++)kern[i]/=sum;
-  // Horizontal pass
-  var tmp=new Float32Array(w*h);
-  for(var y=0;y<h;y++)for(var x=0;x<w;x++){
-    var s=0;for(var k=0;k<ks;k++){var sx=Math.min(w-1,Math.max(0,x+k-r));s+=d[y*w+sx]*kern[k]}
-    tmp[y*w+x]=s;
-  }
-  // Vertical pass
-  var out=new Uint8Array(w*h);
-  for(var y=0;y<h;y++)for(var x=0;x<w;x++){
-    var s=0;for(var k=0;k<ks;k++){var sy=Math.min(h-1,Math.max(0,y+k-r));s+=tmp[sy*w+x]*kern[k]}
-    out[y*w+x]=Math.round(s);
-  }
-  return{data:out,width:w,height:h};
-}
-
-// Face mask: after ArcFace alignment, face is always in same position.
-// ArcFace ref points: eyes ~y52, nose ~y72, mouth ~y92
-// Create elliptical mask, background → 128 (neutral gray)
-function applyFaceMask(g){
-  var d=g.data,w=g.width,h=g.height,o=new Uint8Array(d.length);
-  // Ellipse center and radii (tuned for 112×112 ArcFace aligned)
-  var cx=56,cy=68,rx=40,ry=44;
-  for(var y=0;y<h;y++){
-    for(var x=0;x<w;x++){
-      var dx=(x-cx)/rx,dy=(y-cy)/ry;
-      if(dx*dx+dy*dy<=1.0){
-        o[y*w+x]=d[y*w+x]; // inside face
-      }else{
-        o[y*w+x]=128; // outside → fixed neutral gray
-      }
+function applyFaceMask(g) {
+  var d = g.data, w = g.width, h = g.height, o = new Uint8Array(d.length);
+  var cx = 56, cy = 68, rx = 40, ry = 44;
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      var dx = (x - cx) / rx, dy = (y - cy) / ry;
+      o[y * w + x] = (dx * dx + dy * dy <= 1.0) ? d[y * w + x] : 128;
     }
   }
-  return{data:o,width:w,height:h};
+  return { data: o, width: w, height: h };
+}
+
+function normalize(img) {
+  var g = toGray(img);
+  var eq = histEq(g);
+  var masked = applyFaceMask(eq);
+  return { final: masked, steps: { gray: g, eq: eq, masked: masked } };
 }
 
 // ============================================================
-// Gabor Filter Bank
+// pHash: Perceptual Hash (DCT-based)
 // ============================================================
-function gaborKernel(th,lam,sig,gam,ks){
-  var half=Math.floor(ks/2),k=[],ct=Math.cos(th),st2=Math.sin(th);
-  for(var y=-half;y<=half;y++)for(var x=-half;x<=half;x++){
-    var xp=x*ct+y*st2,yp=-x*st2+y*ct;
-    k.push(Math.exp(-(xp*xp+gam*gam*yp*yp)/(2*sig*sig))*Math.cos(2*Math.PI*xp/lam));
-  }
-  return{data:k,size:ks};
-}
-
-function applyK(g,kern){
-  var d=g.data,w=g.width,h=g.height,k=kern.data,ks=kern.size,half=Math.floor(ks/2);
-  var out=new Float32Array(w*h);
-  for(var y=half;y<h-half;y++)for(var x=half;x<w-half;x++){
-    var s=0;for(var ky=-half;ky<=half;ky++)for(var kx=-half;kx<=half;kx++)
-      s+=d[(y+ky)*w+(x+kx)]*k[(ky+half)*(2*half+1)+(kx+half)];
-    out[y*w+x]=s;
-  }
-  return out;
-}
-
-function gaborFeats(g){
-  var thetas=[0,Math.PI/4,Math.PI/2,3*Math.PI/4],lambdas=[6,10,16];
-  var GR=4,w=g.width,h=g.height,cw=Math.floor(w/GR),ch=Math.floor(h/GR),feats=[];
-  for(var ti=0;ti<thetas.length;ti++)for(var li=0;li<lambdas.length;li++){
-    var kern=gaborKernel(thetas[ti],lambdas[li],3,.5,11);
-    var resp=applyK(g,kern);
-    for(var gy=0;gy<GR;gy++)for(var gx=0;gx<GR;gx++){
-      var e=0,c=0;
-      for(var y=gy*ch;y<(gy+1)*ch&&y<h;y++)for(var x=gx*cw;x<(gx+1)*cw&&x<w;x++){e+=resp[y*w+x]*resp[y*w+x];c++}
-      feats.push(c>0?Math.sqrt(e/c):0);
-    }
-  }
-  return feats;
-}
-
-// ============================================================
-// LBP
-// ============================================================
-function lbpFeats(g){
-  var d=g.data,w=g.width,h=g.height,GR=4,cw=Math.floor(w/GR),ch=Math.floor(h/GR);
-  var lbp=new Uint8Array(w*h);
-  for(var y=1;y<h-1;y++)for(var x=1;x<w-1;x++){
-    var c=d[y*w+x],code=0;
-    if(d[(y-1)*w+x-1]>=c)code|=128;if(d[(y-1)*w+x]>=c)code|=64;
-    if(d[(y-1)*w+x+1]>=c)code|=32;if(d[y*w+x+1]>=c)code|=16;
-    if(d[(y+1)*w+x+1]>=c)code|=8;if(d[(y+1)*w+x]>=c)code|=4;
-    if(d[(y+1)*w+x-1]>=c)code|=2;if(d[y*w+x-1]>=c)code|=1;
-    lbp[y*w+x]=code;
-  }
-  var feats=[];
-  for(var gy=0;gy<GR;gy++)for(var gx=0;gx<GR;gx++){
-    var hist=new Float32Array(16),cnt=0;
-    for(var y=gy*ch+1;y<(gy+1)*ch-1&&y<h-1;y++)for(var x=gx*cw+1;x<(gx+1)*cw-1&&x<w-1;x++){
-      hist[lbp[y*w+x]>>4]++;cnt++;
-    }
-    if(cnt>0)for(var i=0;i<16;i++)hist[i]/=cnt;
-    for(var i=0;i<16;i++)feats.push(hist[i]);
-  }
-  return feats;
-}
-
-
-// ============================================================
-// Hash
-// ============================================================
-async function dualHash(feats,bw){
-  var a=feats.map(function(v){return Math.round(v/bw)});
-  var b=feats.map(function(v){return Math.round((v+bw/2)/bw)});
-  return{ha:await sha256(a.join(',')),hb:await sha256(b.join(','))};
-}
-
-// ============================================================
-// pHash: Perceptual Hash (DCT-based) — multiple sizes
-// ============================================================
-
-// Area-average downscale (more stable than nearest-neighbor)
-function downscale(gray,targetS){
-  var d=gray.data,sw=gray.width,sh=gray.height;
-  var out=new Float64Array(targetS*targetS);
-  var scaleX=sw/targetS,scaleY=sh/targetS;
-  for(var ty=0;ty<targetS;ty++){
-    for(var tx=0;tx<targetS;tx++){
-      var x0=Math.floor(tx*scaleX),x1=Math.min(sw,Math.floor((tx+1)*scaleX));
-      var y0=Math.floor(ty*scaleY),y1=Math.min(sh,Math.floor((ty+1)*scaleY));
-      var sum=0,cnt=0;
-      for(var y=y0;y<y1;y++)for(var x=x0;x<x1;x++){sum+=d[y*sw+x];cnt++}
-      out[ty*targetS+tx]=cnt>0?sum/cnt:0;
+function downscale(gray, targetS) {
+  var d = gray.data, sw = gray.width, sh = gray.height;
+  var out = new Float64Array(targetS * targetS);
+  var scaleX = sw / targetS, scaleY = sh / targetS;
+  for (var ty = 0; ty < targetS; ty++) {
+    for (var tx = 0; tx < targetS; tx++) {
+      var x0 = Math.floor(tx * scaleX), x1 = Math.min(sw, Math.floor((tx + 1) * scaleX));
+      var y0 = Math.floor(ty * scaleY), y1 = Math.min(sh, Math.floor((ty + 1) * scaleY));
+      var sum = 0, cnt = 0;
+      for (var y = y0; y < y1; y++) for (var x = x0; x < x1; x++) { sum += d[y * sw + x]; cnt++ }
+      out[ty * targetS + tx] = cnt > 0 ? sum / cnt : 0;
     }
   }
   return out;
 }
 
-function dct2d(small,S){
-  // Precompute cosine table
-  var cosTable=new Float64Array(S*S);
-  for(var n=0;n<S;n++)for(var k=0;k<S;k++)
-    cosTable[k*S+n]=Math.cos(Math.PI*(2*n+1)*k/(2*S));
-
-  var dct=new Float64Array(S*S);
-  for(var u=0;u<S;u++){
-    for(var v=0;v<S;v++){
-      var sum=0;
-      for(var y=0;y<S;y++){
-        var cosV=cosTable[v*S+y];
-        for(var x=0;x<S;x++){
-          sum+=small[y*S+x]*cosTable[u*S+x]*cosV;
-        }
+function dct2d(small, S) {
+  var cosTable = new Float64Array(S * S);
+  for (var n = 0; n < S; n++) for (var k = 0; k < S; k++)
+    cosTable[k * S + n] = Math.cos(Math.PI * (2 * n + 1) * k / (2 * S));
+  var dct = new Float64Array(S * S);
+  for (var u = 0; u < S; u++) {
+    for (var v = 0; v < S; v++) {
+      var sum = 0;
+      for (var y = 0; y < S; y++) {
+        var cosV = cosTable[v * S + y];
+        for (var x = 0; x < S; x++) sum += small[y * S + x] * cosTable[u * S + x] * cosV;
       }
-      var cu=u===0?1/Math.sqrt(2):1;
-      var cv=v===0?1/Math.sqrt(2):1;
-      dct[v*S+u]=(2/S)*cu*cv*sum;
+      var cu = u === 0 ? 1 / Math.sqrt(2) : 1;
+      var cv = v === 0 ? 1 / Math.sqrt(2) : 1;
+      dct[v * S + u] = (2 / S) * cu * cv * sum;
     }
   }
   return dct;
 }
 
-function pHashN(gray,dctSize,inputSize){
-  // 1. Area-average downscale (not nearest-neighbor — more stable)
-  var small=downscale(gray,inputSize);
-  // 2. 2D DCT
-  var dct=dct2d(small,inputSize);
-  // 3. Take top-left dctSize×dctSize coefficients (skip DC)
-  var coeffs=[];
-  for(var v=0;v<dctSize;v++)for(var u=0;u<dctSize;u++){
-    if(u===0&&v===0)continue;
-    coeffs.push(dct[v*inputSize+u]);
+function pHashN(gray, dctSize, inputSize) {
+  var small = downscale(gray, inputSize);
+  var dct = dct2d(small, inputSize);
+  var coeffs = [];
+  for (var v = 0; v < dctSize; v++) for (var u = 0; u < dctSize; u++) {
+    if (u === 0 && v === 0) continue;
+    coeffs.push(dct[v * inputSize + u]);
   }
-  // 4. Median threshold → binary
-  var sorted=coeffs.slice().sort(function(a,b){return a-b});
-  var median=sorted[Math.floor(sorted.length/2)];
-  var bits='';
-  for(var i=0;i<coeffs.length;i++)bits+=(coeffs[i]>median?'1':'0');
-  // 5. Hex
-  var hex='';
-  for(var i=0;i<bits.length;i+=4)hex+=parseInt(bits.substr(i,4)||'0',2).toString(16);
-  return{bits:bits,hex:hex,nBits:coeffs.length};
+  var sorted = coeffs.slice().sort(function(a, b) { return a - b });
+  var median = sorted[Math.floor(sorted.length / 2)];
+  var bits = '';
+  for (var i = 0; i < coeffs.length; i++) bits += (coeffs[i] > median ? '1' : '0');
+  var hex = '';
+  for (var i = 0; i < bits.length; i += 4) hex += parseInt(bits.substr(i, 4) || '0', 2).toString(16);
+  return { bits: bits, hex: hex, nBits: coeffs.length };
 }
 
-function pHash(gray){
-  return{
-    p8:pHashN(gray,8,32),   // 63 bit (original)
-    p5:pHashN(gray,5,32),   // 24 bit (coarser, more stable?)
-    p4:pHashN(gray,4,16),   // 15 bit (very coarse, should be very stable)
+function computePHash(gray) {
+  return {
+    p8: pHashN(gray, 8, 32),
+    p5: pHashN(gray, 5, 32),
+    p4: pHashN(gray, 4, 16),
   };
 }
 
-function pHashDist(a,b){
-  if(a.bits.length!==b.bits.length)return a.bits.length;
-  var d=0;for(var i=0;i<a.bits.length;i++)if(a.bits[i]!==b.bits[i])d++;
-  return d;
+// ============================================================
+// BONE RATIOS — 67 ratios from MediaPipe 468 landmarks
+// ============================================================
+function d2(a, b) { return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)) }
+function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } }
+
+// 3D versions
+function d3(a, b) { var dz = (a.z||0)-(b.z||0); return Math.sqrt((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y)+dz*dz) }
+function mid3d(a, b) { return { x:(a.x+b.x)/2, y:(a.y+b.y)/2, z:((a.z||0)+(b.z||0))/2 } }
+
+function boneRatios3D(lm) {
+  var _d2 = d2, _mid = mid;
+  d2 = d3; mid = mid3d;
+  var r = boneRatios(lm);
+  d2 = _d2; mid = _mid;
+  return r;
 }
+
+var RATIO_KEYS = [
+  'F01','F02','F03','F04','F05','F06','F07',
+  'EL01','EL02','EL03','EL04','EL05','EL06','EL07','EL08',
+  'ER01','ER02','ER03','ER04','ER05','ER06','ER07','ER08',
+  'B01','B02','B03','B04','B05','B06','B07','B08',
+  'N01','N02','N03','N04','N05','N06','N07','N08','N09','N10',
+  'M01','M02','M03','M04','M05','M06','M07','M08','M09','M10',
+  'J01','J02','J03','J04','J05','J06','J07','J08',
+  'X01','X02','X03','X04','X05','X06','X07','X08'
+];
+
+function boneRatios(lm) {
+  // v15: ALL denominators use IPD (interpupillary distance) — pure orbital bone
+  // IPD = lm[33] → lm[263], unaffected by weight change
+  // fw/fh retained only for legacy ratios (not in whitelist)
+  var fw = d2(lm[234], lm[454]), fh = d2(lm[10], lm[152]), ipd = d2(lm[33], lm[263]);
+  if (fw < .01 || fh < .01 || ipd < .01) return null;
+
+  var leC = mid(lm[33], lm[133]), reC = mid(lm[263], lm[362]);
+  var eyeMid = mid(leC, reC);
+
+  var r = {};
+  // === F: Face proportions ===
+  r.F01 = ipd / fw;                                       // legacy (fw affected by fat)
+  r.F02 = d2(lm[10], eyeMid) / ipd;                      // v15: forehead→eyeMid / IPD
+  r.F03 = d2(eyeMid, lm[2]) / ipd;                       // v15: eyeMid→nose / IPD (was /fh)
+  r.F04 = d2(lm[2], lm[152]) / fh;                       // legacy (chin)
+  r.F05 = d2(lm[234], lm[1]) / d2(lm[1], lm[454]);      // face asymmetry
+  r.F06 = d2(lm[10], eyeMid) / d2(lm[2], lm[152]);      // upper/lower ratio
+  r.F07 = Math.abs(lm[1].x - eyeMid.x) / ipd;           // nose offset
+
+  // === EL: Left eye (bone-only) ===
+  r.EL01 = d2(lm[33], lm[133]) / d2(lm[159], lm[145]); // eye W/H
+  r.EL02 = d2(lm[133], leC) / d2(lm[33], leC);          // inner/outer half ratio
+  r.EL03 = d2(lm[133], lm[6]) / ipd;                     // inner corner→nasion / IPD
+  r.EL04 = d2(leC, lm[1]) / ipd;                         // v15: eyeC→nose / IPD (was /fh)
+  r.EL05 = d2(lm[159], lm[145]) / ipd;                   // eye height / IPD
+  r.EL06 = d2(lm[33], lm[133]) / ipd;                    // v15: eye width / IPD (was /fw)
+  r.EL07 = d2(lm[159], lm[66]) / d2(lm[159], lm[145]);  // brow-eye ratio
+  r.EL08 = d2(leC, lm[6]) / ipd;                         // v15: eyeC→nasion / IPD (was mouth lm[61])
+
+  // === ER: Right eye (bone-only) ===
+  r.ER01 = d2(lm[263], lm[362]) / d2(lm[386], lm[374]); // eye W/H
+  r.ER02 = d2(lm[362], reC) / d2(lm[263], reC);          // inner/outer half ratio
+  r.ER03 = d2(lm[362], lm[6]) / ipd;                     // inner corner→nasion / IPD
+  r.ER04 = d2(reC, lm[1]) / ipd;                         // v15: eyeC→nose / IPD (was /fh)
+  r.ER05 = d2(lm[386], lm[374]) / ipd;                   // eye height / IPD
+  r.ER06 = d2(lm[263], lm[362]) / ipd;                   // v15: eye width / IPD (was /fw)
+  r.ER07 = d2(lm[386], lm[296]) / d2(lm[386], lm[374]); // brow-eye ratio
+  r.ER08 = d2(reC, lm[6]) / ipd;                         // v15: eyeC→nasion / IPD (was mouth lm[291])
+
+  // === B: Eyebrows (bone-only) ===
+  r.B01 = d2(lm[66], eyeMid) / ipd;                      // v15: L brow→eyeMid / IPD (was /fh)
+  r.B02 = d2(lm[296], eyeMid) / ipd;                     // v15: R brow→eyeMid / IPD (was /fh)
+  r.B03 = d2(lm[66], eyeMid) / d2(lm[296], eyeMid);     // brow symmetry
+  r.B04 = d2(lm[105], lm[334]) / ipd;                    // inner brow span / IPD
+  r.B05 = d2(lm[70], lm[300]) / ipd;                     // v15: outer brow span / IPD (was /fw)
+  r.B06 = d2(lm[70], lm[105]) / ipd;                     // L brow length / IPD
+  r.B07 = d2(lm[300], lm[334]) / ipd;                    // R brow length / IPD
+  r.B08 = d2(lm[70], lm[105]) / d2(lm[300], lm[334]);   // L/R brow symmetry
+
+  // === N: Nose (bone + cartilage, stable) ===
+  r.N01 = d2(lm[48], lm[278]) / ipd;                     // nose alar width / IPD
+  r.N02 = d2(lm[6], lm[2]) / ipd;                        // v15: nose bridge length / IPD (was /fh)
+  r.N03 = d2(lm[6], lm[4]) / d2(lm[6], lm[2]);          // bridge-to-tip ratio
+  r.N04 = d2(lm[98], lm[327]) / d2(lm[48], lm[278]);    // nostril outer/inner ratio
+  r.N05 = d2(lm[48], lm[6]) / ipd;                       // v15: L alar→nasion / IPD (was mouth lm[61])
+  r.N06 = d2(lm[1], lm[48]) / d2(lm[1], lm[278]);       // nose tip asymmetry
+  r.N07 = d2(lm[48], lm[278]) / d2(lm[6], lm[2]);       // width/length ratio
+  r.N08 = d2(lm[6], lm[10]) / ipd;                       // v15: nasion→forehead / IPD (was /fh)
+  r.N09 = d2(lm[1], lm[0]) / d2(lm[6], lm[2]);          // nose tip→lip / nose length
+  r.N10 = d2(lm[4], lm[2]) / ipd;                        // v15: nose tip→subnasal / IPD (was chin)
+
+  // === M: Mouth — legacy (soft tissue, NOT in v15 whitelist) ===
+  r.M01 = d2(lm[61], lm[291]) / fw;
+  r.M02 = d2(lm[61], lm[291]) / ipd;
+  r.M03 = d2(lm[0], lm[13]) / d2(lm[14], lm[17]);
+  r.M04 = d2(lm[0], lm[2]) / ipd;                        // v15: lip→nose / IPD (was /fh)
+  r.M05 = d2(lm[0], lm[152]) / fh;
+  r.M06 = d2(lm[61], lm[152]) / fh;
+  r.M07 = d2(lm[291], lm[152]) / fh;
+  r.M08 = d2(lm[61], lm[0]) / d2(lm[291], lm[0]);
+  r.M09 = d2(lm[0], lm[17]) / d2(lm[61], lm[291]);
+  r.M10 = d2(lm[2], lm[0]) / d2(lm[6], lm[2]);
+
+  // === J: Jaw — legacy (fat-affected, NOT in v15 whitelist) ===
+  r.J01 = d2(lm[132], lm[361]) / fw;
+  r.J02 = d2(lm[93], lm[323]) / fw;
+  r.J03 = d2(lm[175], lm[396]) / d2(lm[132], lm[361]);
+  r.J04 = d2(lm[132], lm[152]) / d2(lm[361], lm[152]);
+  r.J05 = d2(lm[93], lm[132]) / fh;
+  r.J06 = d2(lm[175], lm[396]) / d2(lm[152], mid(lm[175], lm[396]));
+  r.J07 = d2(lm[58], lm[288]) / fw;
+  r.J08 = d2(lm[93], lm[323]) / ipd;
+
+  // === X: Cross-features (v15: bone-only replacements) ===
+  r.X01 = d2(lm[6], lm[2]) / ipd;                        // nose length / IPD
+  r.X02 = d2(eyeMid, lm[4]) / ipd;                       // v15: eyeMid→nose tip / IPD (was mouth lm[0])
+  r.X03 = d2(eyeMid, lm[6]) / ipd;                       // v15: eyeMid→nasion / IPD (was chin lm[152])
+  r.X04 = d2(lm[48], lm[278]) / d2(lm[61], lm[291]);    // nose/mouth width ratio
+  r.X05 = d2(lm[105], lm[6]) / ipd;                      // v15: L inner brow→nasion / IPD (was jaw lm[132])
+  r.X06 = d2(lm[334], lm[6]) / ipd;                      // v15: R inner brow→nasion / IPD (was asymmetry)
+  r.X07 = d2(lm[6], eyeMid) / d2(lm[6], lm[2]);         // v15: nasion split ratio (was F02/F04)
+  r.X08 = d2(lm[278], lm[6]) / ipd;                      // v15: R alar→nasion / IPD (was fw/eye)
+
+  return r;
+}
+
+// ============================================================
+// QUANTIZATION CONFIG
+// ============================================================
+var BIN_WIDTH = 0.25;
+var BOUNDARY_MARGIN = 0.25;
+var CONSISTENCY_THRESHOLD = 0.80;
+
+// Quantization: round() instead of floor()
+// floor() boundaries at 0.00, 0.10, 0.20, ... — our drifters cluster here
+// round() boundaries at 0.05, 0.15, 0.25, ... — shifted by half bin, avoids clustering
+function quantize(v) { return Math.round(v / BIN_WIDTH); }
+
+// v15: Exclude all fat-affected ratios (jaw, chin, mouth soft tissue)
+// Also exclude eyelid-opening ratios (EL01/ER01 W/H) and unstable asymmetry ratios
+var EXCLUDED_RATIOS = {
+  // Eyelid opening (varies with expression)
+  'EL01': true, 'ER01': true, 'EL05': true, 'ER05': true,
+  'EL07': true, 'ER07': true,
+  // Face width/height dependent (fat-affected)
+  'F01': true, 'F04': true, 'F05': true, 'F06': true, 'F07': true,
+  // Asymmetry ratios (unstable)
+  'B03': true, 'B08': true, 'N06': true,
+  // Mouth — ALL soft tissue
+  'M01': true, 'M02': true, 'M03': true, 'M04': true, 'M05': true,
+  'M06': true, 'M07': true, 'M08': true, 'M09': true, 'M10': true,
+  // Jaw — ALL fat-affected
+  'J01': true, 'J02': true, 'J03': true, 'J04': true, 'J05': true,
+  'J06': true, 'J07': true, 'J08': true,
+  // Cross-features using mouth/jaw
+  'X04': true,
+  // Nose soft-tissue (lip landmark)
+  'N09': true,
+};
+
+// v15.1 WHITELIST: 25 bone-stable ratios — IPD normalized, multi-frame median
+// Registration: 5 near-frontal frames → median (matches login method)
+// Discriminative power: 5^25 ≈ 3×10^17 combinations
+var WHITELIST_RATIOS = [
+  // Face: forehead + eye-nose (IPD denom)
+  'F02','F03',
+  // Left eye: orbital bone only (IPD denom)
+  'EL02','EL03','EL04','EL06','EL08',
+  // Right eye: orbital bone only (IPD denom)
+  'ER02','ER03','ER04','ER06','ER08',
+  // Eyebrows: brow ridge bone (IPD denom)
+  'B01','B02','B04','B05','B06','B07',
+  // Nose: nasal bone + cartilage (IPD denom)
+  'N01','N02','N03','N04','N10',
+  // Cross: eye-brow-nose (IPD denom)
+  'X03','X05'
+];
+
+// ============================================================
+// 3D RECONSTRUCTION
+// ============================================================
+function extractRotation(mat) {
+  var d = mat.data;
+  return [[d[0],d[1],d[2]], [d[4],d[5],d[6]], [d[8],d[9],d[10]]];
+}
+function transposeR(R) {
+  return [[R[0][0],R[1][0],R[2][0]], [R[0][1],R[1][1],R[2][1]], [R[0][2],R[1][2],R[2][2]]];
+}
+function rot3(R, p) {
+  return {
+    x: R[0][0]*p.x + R[0][1]*p.y + R[0][2]*p.z,
+    y: R[1][0]*p.x + R[1][1]*p.y + R[1][2]*p.z,
+    z: R[2][0]*p.x + R[2][1]*p.y + R[2][2]*p.z
+  };
+}
+
+function canonicalizeLandmarks(landmarks, matrix) {
+  var R = extractRotation(matrix);
+  var Ri = transposeR(R);
+  var cx = 0, cy = 0, cz = 0, n = landmarks.length;
+  for (var i = 0; i < n; i++) {
+    cx += landmarks[i].x; cy += landmarks[i].y; cz += (landmarks[i].z || 0);
+  }
+  cx /= n; cy /= n; cz /= n;
+  var out = [];
+  for (var i = 0; i < n; i++) {
+    var p = { x: landmarks[i].x - cx, y: landmarks[i].y - cy, z: (landmarks[i].z || 0) - cz };
+    var rp = rot3(Ri, p);
+    out.push({ x: rp.x, y: rp.y, z: rp.z });
+  }
+  return out;
+}
+
+function build3DModel(allFrames) {
+  var canonSets = [];
+  for (var f = 0; f < allFrames.length; f++) {
+    var fr = allFrames[f];
+    if (fr.matrix) {
+      canonSets.push(canonicalizeLandmarks(fr.landmarks, fr.matrix));
+    } else {
+      var raw = [];
+      for (var i = 0; i < fr.landmarks.length; i++)
+        raw.push({ x: fr.landmarks[i].x, y: fr.landmarks[i].y, z: fr.landmarks[i].z || 0 });
+      canonSets.push(raw);
+    }
+  }
+  if (canonSets.length === 0) return null;
+
+  var numLm = canonSets[0].length;
+  var model = [];
+  for (var i = 0; i < numLm; i++) {
+    var xs = [], ys = [], zs = [];
+    for (var j = 0; j < canonSets.length; j++) {
+      xs.push(canonSets[j][i].x);
+      ys.push(canonSets[j][i].y);
+      zs.push(canonSets[j][i].z);
+    }
+    xs.sort(function(a,b){return a-b});
+    ys.sort(function(a,b){return a-b});
+    zs.sort(function(a,b){return a-b});
+    var m = Math.floor(xs.length / 2);
+    model.push({ x: xs[m], y: ys[m], z: zs[m] });
+  }
+  lg('[3D] Built model from ' + canonSets.length + ' canonical views');
+  return model;
+}
+
+// ============================================================
+// 3D FACE PSEUDO-COLOR VISUALIZATION
+// ============================================================
+
+// Jet colormap: 0 (blue/far) -> 0.25 (cyan) -> 0.5 (green) -> 0.75 (yellow) -> 1.0 (red/near)
+function jetColor(t) {
+  t = Math.max(0, Math.min(1, t));
+  var r, g, b;
+  if (t < 0.25) { r = 0; g = t * 4; b = 1; }
+  else if (t < 0.5) { r = 0; g = 1; b = 1 - (t - 0.25) * 4; }
+  else if (t < 0.75) { r = (t - 0.5) * 4; g = 1; b = 0; }
+  else { r = 1; g = 1 - (t - 0.75) * 4; b = 0; }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+// Face mesh key contour indices for wireframe rendering
+var FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109,10];
+var LEFT_EYE = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246,33];
+var RIGHT_EYE = [263,249,390,373,374,380,381,382,362,398,384,385,386,387,388,466,263];
+var NOSE_BRIDGE = [6,197,195,5,4,1,19,94,2];
+var MOUTH_OUTER = [61,146,91,181,84,17,314,405,321,375,291,409,270,269,267,0,37,39,40,185,61];
+var LEFT_BROW = [70,63,105,66,107,55,65,52,53,46,70];
+var RIGHT_BROW = [300,293,334,296,336,285,295,282,283,276,300];
+var NOSE_BOTTOM = [48,115,220,45,4,275,440,344,278];
+var ALL_CONTOURS = [FACE_OVAL, LEFT_EYE, RIGHT_EYE, NOSE_BRIDGE, MOUTH_OUTER, LEFT_BROW, RIGHT_BROW, NOSE_BOTTOM];
+
+/**
+ * Render 3D face model on a canvas with pseudo-color depth
+ * @param model 468 landmarks [{x,y,z}]
+ * @param canvasId target canvas element ID
+ * @param rotY rotation around Y axis in radians (0=front, PI/4=side)
+ * @param rotX rotation around X axis in radians (0=front, PI/3=top)
+ */
+function draw3DFace(model, canvasId, rotY, rotX) {
+  var canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+  ctx.fillStyle = '#08080c';
+  ctx.fillRect(0, 0, W, H);
+
+  if (!model || model.length < 468) return;
+
+  rotY = rotY || 0;
+  rotX = rotX || 0;
+
+  // Rotate all points
+  var cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+  var cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+  var pts = [];
+  for (var i = 0; i < model.length; i++) {
+    // Y rotation
+    var rx = model[i].x * cosY + (model[i].z || 0) * sinY;
+    var ry = model[i].y;
+    var rz = -(model[i].x) * sinY + (model[i].z || 0) * cosY;
+    // X rotation
+    var ry2 = ry * cosX - rz * sinX;
+    var rz2 = ry * sinX + rz * cosX;
+    pts.push({ x: rx, y: ry2, z: rz2 });
+  }
+
+  // Find bounds
+  var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  var minZ = Infinity, maxZ = -Infinity;
+  for (var i = 0; i < pts.length; i++) {
+    if (pts[i].x < minX) minX = pts[i].x;
+    if (pts[i].x > maxX) maxX = pts[i].x;
+    if (pts[i].y < minY) minY = pts[i].y;
+    if (pts[i].y > maxY) maxY = pts[i].y;
+    if (pts[i].z < minZ) minZ = pts[i].z;
+    if (pts[i].z > maxZ) maxZ = pts[i].z;
+  }
+
+  var margin = 15;
+  var rangeX = maxX - minX || 1, rangeY = maxY - minY || 1, rangeZ = maxZ - minZ || 1;
+  var scaleX = (W - 2 * margin) / rangeX;
+  var scaleY = (H - 2 * margin) / rangeY;
+  var scale = Math.min(scaleX, scaleY);
+  var offX = (W - rangeX * scale) / 2;
+  var offY = (H - rangeY * scale) / 2;
+
+  function proj(idx) {
+    return {
+      px: offX + (pts[idx].x - minX) * scale,
+      py: offY + (pts[idx].y - minY) * scale,
+      depth: 1 - (pts[idx].z - minZ) / rangeZ  // invert: nose (minZ) = near (red)
+    };
+  }
+
+  // Draw contour lines first (semi-transparent)
+  ctx.lineWidth = 0.8;
+  ctx.globalAlpha = 0.35;
+  for (var ci = 0; ci < ALL_CONTOURS.length; ci++) {
+    var contour = ALL_CONTOURS[ci];
+    ctx.beginPath();
+    for (var j = 0; j < contour.length; j++) {
+      var p = proj(contour[j]);
+      var c = jetColor(p.depth);
+      if (j === 0) ctx.moveTo(p.px, p.py);
+      else ctx.lineTo(p.px, p.py);
+    }
+    ctx.strokeStyle = 'rgba(200,200,200,0.5)';
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1.0;
+
+  // Sort by depth for painter's algorithm (far points first)
+  var indices = [];
+  for (var i = 0; i < pts.length; i++) indices.push(i);
+  indices.sort(function(a, b) { return pts[a].z - pts[b].z; });
+
+  // Draw points
+  for (var ii = 0; ii < indices.length; ii++) {
+    var idx = indices[ii];
+    var p = proj(idx);
+    var c = jetColor(p.depth);
+    var radius = 1.2 + p.depth * 1.8;  // nearer = larger
+
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+    ctx.fill();
+  }
+
+  // Label
+  ctx.fillStyle = '#555';
+  ctx.font = '9px monospace';
+  ctx.fillText(model.length + ' pts', 4, H - 4);
+}
+
+function render3DFaceViews(model) {
+  document.getElementById('face3d-box').style.display = 'block';
+  draw3DFace(model, 'face3d-front', 0, 0);
+  draw3DFace(model, 'face3d-side', Math.PI / 5, 0);
+  draw3DFace(model, 'face3d-top', 0, -Math.PI / 3);
+}
+
+// ============================================================
+// CAPTURE FRAME (any angle)
+// ============================================================
+function captureFrameAny() {
+  if (!ready || !fl) return null;
+  var mp = fl.detect(vid);
+  if (!mp.faceLandmarks || !mp.faceLandmarks.length) return null;
+  var lm = mp.faceLandmarks[0];
+  var matrix = (mp.facialTransformationMatrixes && mp.facialTransformationMatrixes.length > 0)
+    ? mp.facialTransformationMatrixes[0] : null;
+
+  var leX = (lm[33].x + lm[133].x) / 2;
+  var reX = (lm[263].x + lm[362].x) / 2;
+  var eyeMidX = (leX + reX) / 2;
+  var eyeSpan = Math.abs(reX - leX);
+  if (eyeSpan < 0.01) return null;
+  var yaw = (lm[1].x - eyeMidX) / eyeSpan;
+
+  return { landmarks: lm, matrix: matrix, yaw: yaw };
+}
+
+// ============================================================
+// VIDEO 3D SCAN — Continuous capture with auto frame extraction
+// ============================================================
+
+// Yaw zones for auto-capture
+var YAW_ZONES = [
+  { name: 'far-left',  min:  0.20, max:  0.50, target: 4, color: '#a855f7' },
+  { name: 'left',      min:  0.08, max:  0.20, target: 4, color: '#7c3aed' },
+  { name: 'center',    min: -0.08, max:  0.08, target: 6, color: '#00e5ff' },
+  { name: 'right',     min: -0.20, max: -0.08, target: 4, color: '#7c3aed' },
+  { name: 'far-right', min: -0.50, max: -0.20, target: 4, color: '#a855f7' }
+];
+
+function getYawZone(yaw) {
+  for (var i = 0; i < YAW_ZONES.length; i++) {
+    if (yaw >= YAW_ZONES[i].min && yaw < YAW_ZONES[i].max) return i;
+  }
+  if (yaw >= 0.50) return 0;  // far-left overflow
+  if (yaw < -0.50) return 4;  // far-right overflow
+  return 2; // center fallback
+}
+
+function updateYawUI(yaw, zoneCounts) {
+  // Move cursor: yaw range -0.4 to +0.4 mapped to 0-100%
+  var pct = Math.max(0, Math.min(100, (1 - (yaw + 0.4) / 0.8) * 100));
+  document.getElementById('yaw-cursor').style.left = 'calc(' + pct + '% - 2px)';
+
+  // Update counts
+  var leftCount = (zoneCounts[0] || 0) + (zoneCounts[1] || 0);
+  var centerCount = zoneCounts[2] || 0;
+  var rightCount = (zoneCounts[3] || 0) + (zoneCounts[4] || 0);
+
+  var lcEl = document.getElementById('yc-left');
+  var ccEl = document.getElementById('yc-center');
+  var rcEl = document.getElementById('yc-right');
+
+  lcEl.textContent = '\u2190 Left: ' + leftCount;
+  ccEl.textContent = 'Center: ' + centerCount;
+  rcEl.textContent = 'Right: ' + rightCount + ' \u2192';
+
+  lcEl.className = leftCount >= 6 ? 'full' : '';
+  ccEl.className = centerCount >= 6 ? 'full' : '';
+  rcEl.className = rightCount >= 6 ? 'full' : '';
+}
+
+function addYawDot(yaw, color) {
+  var pct = Math.max(0, Math.min(100, (1 - (yaw + 0.4) / 0.8) * 100));
+  var dot = document.createElement('div');
+  dot.className = 'yaw-dot';
+  dot.style.left = 'calc(' + pct + '% - 2px)';
+  dot.style.backgroundColor = color;
+  document.getElementById('yaw-track').appendChild(dot);
+}
+
+async function do3DVideoScan(silent) {
+  if (!ready) return null;
+
+  disableAllButtons();
+
+  var yawEl = document.getElementById('yaw-indicator');
+  if (!silent) {
+    yawEl.style.display = 'block';
+    // Clear old dots
+    var oldDots = yawEl.querySelectorAll('.yaw-dot');
+    for (var i = 0; i < oldDots.length; i++) oldDots[i].remove();
+  }
+
+  var allFrames = [];
+  var zoneCounts = [0, 0, 0, 0, 0];
+  var zoneFrames = [[], [], [], [], []];
+  var lastCaptureTime = 0;
+  var CAPTURE_INTERVAL = 120;  // min ms between captures in same zone
+  var TIMEOUT = 15000;         // 15s max scan time
+  var startTime = Date.now();
+
+  st('\uD83C\uDFA5 Slowly turn your head: LEFT \u2192 CENTER \u2192 RIGHT', 'ld');
+
+  // Minimum requirements: center >= 4 AND (left >= 4 OR right >= 4)
+  function hasEnoughCoverage() {
+    var leftTotal = zoneCounts[0] + zoneCounts[1];
+    var rightTotal = zoneCounts[3] + zoneCounts[4];
+    var center = zoneCounts[2];
+    return center >= 4 && leftTotal >= 4 && rightTotal >= 4;
+  }
+
+  // Main scan loop
+  while (Date.now() - startTime < TIMEOUT) {
+    var frame = captureFrameAny();
+
+    if (!frame) {
+      if (!silent) updateYawUI(0, zoneCounts);
+      await sleep(60);
+      continue;
+    }
+
+    if (!silent) updateYawUI(frame.yaw, zoneCounts);
+
+    // Determine zone
+    var zone = getYawZone(frame.yaw);
+    var now = Date.now();
+
+    // Capture if zone not full and enough time since last capture
+    if (zoneCounts[zone] < YAW_ZONES[zone].target && (now - lastCaptureTime) >= CAPTURE_INTERVAL) {
+      allFrames.push(frame);
+      zoneCounts[zone]++;
+      zoneFrames[zone].push(frame);
+      lastCaptureTime = now;
+
+      if (!silent) {
+        addYawDot(frame.yaw, YAW_ZONES[zone].color);
+        updateYawUI(frame.yaw, zoneCounts);
+      }
+
+      var total = allFrames.length;
+      lg('[scan] frame ' + total + ' zone=' + YAW_ZONES[zone].name + ' yaw=' + frame.yaw.toFixed(3));
+
+      if (!silent) {
+        document.getElementById('yaw-title').textContent =
+          'Scanning... ' + total + ' frames captured';
+      }
+
+      // Check if enough
+      if (hasEnoughCoverage()) {
+        // Continue a bit more for extra coverage, up to 2 more seconds
+        var extraEnd = Date.now() + 2000;
+        while (Date.now() < extraEnd) {
+          var ef = captureFrameAny();
+          if (ef) {
+            if (!silent) updateYawUI(ef.yaw, zoneCounts);
+            var ez = getYawZone(ef.yaw);
+            if (zoneCounts[ez] < YAW_ZONES[ez].target && (Date.now() - lastCaptureTime) >= CAPTURE_INTERVAL) {
+              allFrames.push(ef);
+              zoneCounts[ez]++;
+              lastCaptureTime = Date.now();
+              if (!silent) addYawDot(ef.yaw, YAW_ZONES[ez].color);
+            }
+          }
+          await sleep(60);
+        }
+        break;
+      }
+    }
+
+    await sleep(60);
+  }
+
+  var total = allFrames.length;
+  if (!silent) updateYawUI(0, zoneCounts);
+
+  if (total < 8 || zoneCounts[2] < 3) {
+    st('Scan failed: not enough frames (' + total + '). Keep face visible and turn slowly.', 'er');
+    if (!silent) yawEl.style.display = 'none';
+    enableButtons();
+    return null;
+  }
+
+  st('\u2699 Building 3D model from ' + total + ' frames...', 'ld');
+
+  // Build 3D model
+  var model3D = build3DModel(allFrames);
+  if (!model3D) {
+    st('3D reconstruction failed', 'er');
+    enableButtons();
+    return null;
+  }
+
+  // Render 3D visualization
+  if (!silent) render3DFaceViews(model3D);
+
+  // Compute 3D bone ratios
+  var ratios3D = boneRatios3D(model3D);
+  if (!ratios3D) {
+    st('3D bone ratio computation failed', 'er');
+    enableButtons();
+    return null;
+  }
+
+  // Quantize and hash (whitelist only)
+  var hashParts = [];
+  var ratioDetail = {};
+  for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+    var k = WHITELIST_RATIOS[wi];
+    if (ratios3D[k] !== undefined) {
+      var bin = quantize(ratios3D[k]);
+      hashParts.push(k + ':' + bin);
+      ratioDetail[k] = { value: ratios3D[k], bin: bin };
+    }
+  }
+  var hashInput = hashParts.join('|');
+  var hash = await sha256hex(hashInput);
+
+  lg('[3D] Hash input: ' + hashInput);
+  lg('[3D] Hash: ' + hash);
+
+  // === FRONTAL REFERENCE: multi-frame median (same method as login) ===
+  // Sort frames by abs(yaw), take top N near-frontal frames, compute median ratios
+  var FRONTAL_FRAME_COUNT = 5;
+  var sortedByYaw = allFrames.slice().sort(function(a, b) {
+    return Math.abs(a.yaw) - Math.abs(b.yaw);
+  });
+  var nearFrontalFrames = sortedByYaw.slice(0, Math.min(FRONTAL_FRAME_COUNT, sortedByYaw.length));
+
+  // Compute 2D bone ratios for each near-frontal frame
+  var frontalRatioSets = [];
+  for (var fi = 0; fi < nearFrontalFrames.length; fi++) {
+    var fRatios2D = boneRatios(nearFrontalFrames[fi].landmarks);
+    if (fRatios2D) frontalRatioSets.push(fRatios2D);
+  }
+
+  var frontalBins = {};
+  var frontalRatios = {};
+  var frontalMatchCount = 0;
+  var frontalTotal = 0;
+  if (frontalRatioSets.length >= 2) {
+    // Median per ratio (same as login)
+    for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+      var k = WHITELIST_RATIOS[wi];
+      var vals = [];
+      for (var si = 0; si < frontalRatioSets.length; si++) {
+        if (frontalRatioSets[si][k] !== undefined) vals.push(frontalRatioSets[si][k]);
+      }
+      if (vals.length >= 2) {
+        vals.sort(function(a, b) { return a - b; });
+        var median = vals[Math.floor(vals.length / 2)];
+        var fBin = quantize(median);
+        frontalBins[k] = fBin;
+        frontalRatios[k] = median;
+        frontalTotal++;
+        if (ratioDetail[k] && ratioDetail[k].bin === fBin) frontalMatchCount++;
+      }
+    }
+    var bestYaw = nearFrontalFrames[0] ? Math.abs(nearFrontalFrames[0].yaw) : 0;
+    var worstYaw = nearFrontalFrames[nearFrontalFrames.length - 1] ? Math.abs(nearFrontalFrames[nearFrontalFrames.length - 1].yaw) : 0;
+    lg('[Frontal] ' + frontalRatioSets.length + ' near-frontal frames (yaw ' + bestYaw.toFixed(3) + '~' + worstYaw.toFixed(3) + ') median → match=' + frontalMatchCount + '/' + frontalTotal);
+  }
+
+  // Store frontal reference for login simulation
+  storedFrontalRef = {
+    bins: frontalBins,
+    ratios: frontalRatios,
+    hash3D: hash
+  };
+  showFrontalRefBadge();
+
+  var result = {
+    model3D: model3D,
+    ratios3D: ratios3D,
+    ratioDetail: ratioDetail,
+    hash: hash,
+    hashInput: hashInput,
+    totalFrames: total,
+    zoneCounts: zoneCounts.slice(),
+    frontalBins: frontalBins,
+    frontalRatios: frontalRatios,
+    frontalMatchCount: frontalMatchCount,
+    frontalTotal: frontalTotal,
+    frontalYaw: nearFrontalFrames.length > 0 ? Math.abs(nearFrontalFrames[0].yaw) : 0,
+    frontalFrameCount: frontalRatioSets.length
+  };
+
+  if (!silent) {
+    display3DResult(result);
+    st('\uD83E\uDDE9 3D Scan complete \u2014 ' + total + ' frames \u2192 ' + WHITELIST_RATIOS.length + ' ratios \u2192 hash: ' + hash.substring(0, 16) + '...', 'ok');
+  }
+
+  enableButtons();
+  return result;
+}
+
+function display3DResult(result) {
+  var el = document.getElementById('multi-result');
+  el.style.display = 'block';
+
+  var zn = result.zoneCounts;
+  var html = '<div style="color:#a855f7;font-weight:700;margin-bottom:8px">'
+    + '\uD83E\uDDE9 3D Registration \u2014 ' + result.totalFrames + ' frames from video scan</div>';
+
+  html += '<div style="font-size:.7em;color:#888;margin-bottom:8px">'
+    + 'Far-L: ' + zn[0] + ' | L: ' + zn[1] + ' | Center: ' + zn[2] + ' | R: ' + zn[3] + ' | Far-R: ' + zn[4]
+    + '</div>';
+
+  // Ratio detail table: 3D vs Frontal comparison
+  html += '<table style="width:100%;font-size:.65em;border-collapse:collapse">';
+  html += '<tr style="color:#00e5ff;border-bottom:2px solid #333">'
+    + '<th>Ratio</th>'
+    + '<th style="color:#a855f7">3D Val</th><th style="color:#a855f7">3D Bin</th>'
+    + '<th style="color:#ffc107">Front Val</th><th style="color:#ffc107">Front Bin</th>'
+    + '<th>Match</th></tr>';
+
+  for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+    var k = WHITELIST_RATIOS[wi];
+    var d = result.ratioDetail[k];
+    var fVal = result.frontalRatios[k];
+    var fBin = result.frontalBins[k];
+    var match3F = (d && fBin !== undefined) ? d.bin === fBin : false;
+    html += '<tr style="border-bottom:1px solid #1a1a2a">'
+      + '<td style="color:#00e5ff;font-weight:700">' + k + '</td>'
+      + '<td style="color:#a855f7">' + (d ? d.value.toFixed(4) : '-') + '</td>'
+      + '<td style="color:#a855f7">' + (d ? d.bin : '-') + '</td>'
+      + '<td style="color:#ffc107">' + (fVal !== undefined ? fVal.toFixed(4) : '-') + '</td>'
+      + '<td style="color:#ffc107">' + (fBin !== undefined ? fBin : '-') + '</td>'
+      + '<td style="color:' + (match3F ? '#0f0' : '#f44') + ';font-weight:700">' + (match3F ? '\u2705' : '\u274c') + '</td>'
+      + '</tr>';
+  }
+  html += '</table>';
+
+  // Summary: 3D vs Frontal match rate
+  var matchPct = result.frontalTotal > 0 ? Math.round(result.frontalMatchCount / result.frontalTotal * 100) : 0;
+  var matchCol = matchPct >= 90 ? '#0f0' : matchPct >= 75 ? '#ffc107' : '#f44';
+  html += '<div style="margin-top:10px;padding:10px;background:#0c0c14;border:1px solid #333;border-radius:6px;font-size:.75em">';
+  html += '<div style="color:#ffc107;font-weight:700">3D vs Frontal: <span style="color:' + matchCol + '">'
+    + result.frontalMatchCount + '/' + result.frontalTotal + ' bins match (' + matchPct + '%)</span>'
+    + ' &mdash; frontal yaw: ' + (result.frontalYaw !== undefined ? result.frontalYaw.toFixed(4) : '?') + '</div>';
+  html += '<div style="color:#888;font-size:.9em;margin-top:4px">Frontal reference saved for login test \u2705</div>';
+  html += '</div>';
+
+  html += '<div style="margin-top:10px;padding:10px;background:#0c0c14;border:1px solid #a855f7;border-radius:6px;font-size:.75em">';
+  html += '<div style="color:#0f0;font-weight:700;font-size:1.1em">3D Hash: ' + result.hash.substring(0, 32) + '...</div>';
+  html += '</div>';
+
+  el.innerHTML = html;
+
+  // uid-box
+  var box = document.getElementById('uid-box');
+  box.style.display = 'block';
+  box.className = '';
+  document.getElementById('uid-hash').textContent = result.hash;
+  document.getElementById('uid-stats').innerHTML =
+    '<span>3D Registration | ' + result.totalFrames + ' frames</span>'
+    + '<span>Ratios: ' + WHITELIST_RATIOS.length + '</span>'
+    + '<span>BW: ' + BIN_WIDTH + '</span>';
+}
+
+function showFrontalRefBadge() {
+  var badge = document.getElementById('frontal-ref-badge');
+  if (storedFrontalRef) {
+    var count = Object.keys(storedFrontalRef.bins).length;
+    badge.style.display = 'block';
+    badge.innerHTML = '\uD83D\uDD12 Frontal reference stored locally (' + count + ' bins) &mdash; ready for Login Test';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+// ============================================================
+// 3D MULTI-TEST — repeat scans, compare hashes
+// ============================================================
+async function do3DMultiTest() {
+  if (!ready) return;
+  var NUM_ROUNDS = 3;
+
+  disableAllButtons();
+  var el = document.getElementById('multi-result');
+  el.style.display = 'block';
+  el.innerHTML = '<div style="color:#7c3aed;font-weight:700;margin-bottom:8px">\uD83E\uDDE9 3D Multi-Test \u2014 ' + NUM_ROUNDS + ' full video scans</div>';
+
+  var results = [];
+
+  for (var r = 0; r < NUM_ROUNDS; r++) {
+    st('\uD83E\uDDE9 Round ' + (r+1) + '/' + NUM_ROUNDS + ' \u2014 video 3D scan', 'ld');
+
+    var rowDiv = document.createElement('div');
+    rowDiv.className = 'round-row';
+    rowDiv.innerHTML = '<span class="rn">Round ' + (r+1) + '</span><span class="rh" style="color:#888">scanning...</span>';
+    el.appendChild(rowDiv);
+
+    var result = await do3DVideoScan(true);
+    if (!result) {
+      rowDiv.innerHTML = '<span class="rn">Round ' + (r+1) + '</span><span class="rh" style="color:#f44">FAILED</span>';
+      st('Round ' + (r+1) + ' failed', 'er');
+      enableButtons();
+      return;
+    }
+    results.push(result);
+
+    // Show 3D viz for last round
+    if (r === NUM_ROUNDS - 1) render3DFaceViews(result.model3D);
+
+    var isMatch = r === 0 || result.hash === results[0].hash;
+    rowDiv.className = 'round-row ' + (isMatch ? 'match' : 'diff');
+    rowDiv.innerHTML = '<span class="rn">Round ' + (r+1) + '</span>'
+      + '<span class="rh">' + result.hash.substring(0, 24) + '...</span>'
+      + '<span style="color:' + (isMatch ? '#0f0' : '#f44') + '">' + (r === 0 ? 'REF' : isMatch ? '\u2705' : '\u274c') + '</span>';
+
+    if (r < NUM_ROUNDS - 1) {
+      st('Round ' + (r+1) + ' done \u2014 next round in 3s...', 'ld');
+      await sleep(3000);
+    }
+  }
+
+  // Analyze
+  var uniqueHashes = {};
+  for (var ri = 0; ri < results.length; ri++) uniqueHashes[results[ri].hash] = true;
+  var hashCount = Object.keys(uniqueHashes).length;
+
+  // Per-ratio drifter analysis
+  var drifters = {};
+  for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+    var k = WHITELIST_RATIOS[wi];
+    var refBin = results[0].ratioDetail[k] ? results[0].ratioDetail[k].bin : null;
+    for (var ri = 1; ri < results.length; ri++) {
+      var bin = results[ri].ratioDetail[k] ? results[ri].ratioDetail[k].bin : null;
+      if (refBin !== null && bin !== null && bin !== refBin) {
+        drifters[k] = (drifters[k] || 0) + 1;
+      }
+    }
+  }
+  var drifterKeys = Object.keys(drifters).sort();
+
+  // Per-ratio comparison table
+  var detailHtml = '<div style="margin-top:10px"><table style="width:100%;font-size:.6em;border-collapse:collapse">';
+  detailHtml += '<tr style="color:#00e5ff;border-bottom:2px solid #333"><th>Ratio</th>';
+  for (var ri = 0; ri < results.length; ri++) detailHtml += '<th>R' + (ri+1) + ' val</th><th>R' + (ri+1) + ' bin</th>';
+  detailHtml += '<th>Match</th></tr>';
+
+  for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+    var k = WHITELIST_RATIOS[wi];
+    var allSame = true;
+    var refBin2 = results[0].ratioDetail[k] ? results[0].ratioDetail[k].bin : null;
+    detailHtml += '<tr style="border-bottom:1px solid #1a1a2a"><td style="color:#00e5ff">' + k + '</td>';
+    for (var ri = 0; ri < results.length; ri++) {
+      var d = results[ri].ratioDetail[k];
+      var val = d ? d.value.toFixed(4) : '-';
+      var bin = d ? d.bin : '-';
+      if (d && refBin2 !== null && d.bin !== refBin2) allSame = false;
+      detailHtml += '<td>' + val + '</td><td style="color:' + (allSame ? '#0f0' : '#f44') + '">' + bin + '</td>';
+    }
+    detailHtml += '<td style="color:' + (allSame ? '#0f0' : '#f44') + ';font-weight:700">' + (allSame ? '\u2705' : '\u274c') + '</td></tr>';
+  }
+  detailHtml += '</table></div>';
+
+  var summaryHtml = '<div style="margin-top:10px;padding:12px;background:#0c0c14;border:2px solid ' + (hashCount === 1 ? '#0f0' : '#f44') + ';border-radius:8px">';
+  summaryHtml += '<div style="font-size:1.2em;font-weight:700;color:' + (hashCount === 1 ? '#0f0' : '#f44') + '">'
+    + (hashCount === 1
+      ? '\u2705 ALL ' + NUM_ROUNDS + ' ROUNDS IDENTICAL \u2014 3D Video Scan is Stable!'
+      : '\u26a0\ufe0f ' + hashCount + ' different hashes across ' + NUM_ROUNDS + ' rounds')
+    + '</div>';
+
+  if (drifterKeys.length > 0) {
+    summaryHtml += '<div style="margin-top:6px;font-size:.75em;color:#ffc107">Drifters (' + drifterKeys.length + '): ';
+    for (var di = 0; di < drifterKeys.length; di++) {
+      summaryHtml += '<span style="background:#1a0a0a;padding:2px 6px;border-radius:3px;margin:2px;color:#f44">' + drifterKeys[di] + '</span> ';
+    }
+    summaryHtml += '</div>';
+  } else if (hashCount === 1) {
+    summaryHtml += '<div style="margin-top:4px;font-size:.75em;color:#888">All ' + WHITELIST_RATIOS.length + ' ratios produced identical bins across all rounds.</div>';
+  }
+  summaryHtml += '</div>';
+
+  el.innerHTML += summaryHtml + detailHtml;
+
+  st(hashCount === 1 ? '\uD83E\uDDE9 3D Video: ALL IDENTICAL \u2705' : '\uD83E\uDDE9 3D: ' + hashCount + ' hashes, ' + drifterKeys.length + ' drifters', hashCount === 1 ? 'ok' : 'er');
+  enableButtons();
+}
+
+// ============================================================
+// FRONTAL-ONLY CAPTURE (for 2D generate)
+// ============================================================
+function captureSingleFrame() {
+  if (!ready || !fl) return null;
+  var mp = fl.detect(vid);
+  if (!mp.faceLandmarks || !mp.faceLandmarks.length) return null;
+  var lm = mp.faceLandmarks[0];
+
+  var noseX = lm[1].x;
+  var leftEyeX = (lm[33].x + lm[133].x) / 2;
+  var rightEyeX = (lm[263].x + lm[362].x) / 2;
+  var eyeMidX = (leftEyeX + rightEyeX) / 2;
+  var eyeSpan = Math.abs(rightEyeX - leftEyeX);
+  var noseOffset = Math.abs(noseX - eyeMidX) / eyeSpan;
+  var noseY = lm[1].y, foreheadY = lm[10].y, chinY = lm[152].y;
+  var faceH = chinY - foreheadY;
+  var noseFaceRatio = (noseY - foreheadY) / faceH;
+
+  if (noseOffset >= 0.12 || noseFaceRatio <= 0.45 || noseFaceRatio >= 0.65) {
+    return { error: 'not_frontal', yaw: noseOffset, pitch: noseFaceRatio };
+  }
+
+  var aligned = arcfaceAlign(vid, lm, 112);
+  var normResult = normalize(aligned);
+  var normed = normResult.final;
+  var ph = computePHash(normed);
+  var bones = boneRatios(lm);
+
+  return { landmarks: lm, aligned: aligned, normed: normed, steps: normResult.steps, pHash: ph, bones: bones };
+}
+
+// ============================================================
+// 2D GENERATE (frontal only, kept for comparison)
+// ============================================================
+var dynamicExcluded = {};
+
+// (doGenerate and doCapture removed in v15 — replaced by 3D system)
+
+// ============================================================
+// LOGIN TEST — flat face capture, compare against stored frontal ref
+// ============================================================
+async function doLoginTest() {
+  if (!ready) return;
+  if (!storedFrontalRef) {
+    st('No frontal reference — run 3D Register first', 'er');
+    return;
+  }
+
+  disableAllButtons();
+  st('\uD83D\uDD13 Login: capturing flat face...', 'ld');
+
+  var loginEl = document.getElementById('login-result');
+  loginEl.style.display = 'block';
+  loginEl.className = '';
+  loginEl.innerHTML = '<div style="color:#ffc107;font-size:.85em">Capturing 5 frames for stable measurement...</div>';
+
+  // Capture 5 frontal frames, use median ratios
+  var frames = [];
+  var attempts = 0;
+  while (frames.length < 5 && attempts < 20) {
+    attempts++;
+    var frame = captureSingleFrame();
+    if (!frame || frame.error || !frame.bones) {
+      await sleep(200);
+      continue;
+    }
+    frames.push(frame.bones);
+    await sleep(300);
+  }
+
+  if (frames.length < 3) {
+    st('Login failed: not enough frontal frames', 'er');
+    loginEl.className = 'fail';
+    loginEl.innerHTML = '<div style="color:#f44;font-weight:700;font-size:1.1em">\u274c Login Failed</div>'
+      + '<div style="color:#888;font-size:.75em;margin-top:4px">Could not capture enough frontal frames. Look straight at camera.</div>';
+    enableButtons();
+    return;
+  }
+
+  // Compute median ratios from captured frames
+  var loginBins = {};
+  var loginRatios = {};
+  for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+    var k = WHITELIST_RATIOS[wi];
+    var vals = [];
+    for (var fi = 0; fi < frames.length; fi++) {
+      if (frames[fi][k] !== undefined) vals.push(frames[fi][k]);
+    }
+    if (vals.length >= 2) {
+      vals.sort(function(a, b) { return a - b; });
+      var median = vals[Math.floor(vals.length / 2)];
+      loginBins[k] = quantize(median);
+      loginRatios[k] = median;
+    }
+  }
+
+  // Compare against stored frontal ref
+  var matchCount = 0, totalCompared = 0;
+  var detailRows = [];
+  for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+    var k = WHITELIST_RATIOS[wi];
+    var refBin = storedFrontalRef.bins[k];
+    var loginBin = loginBins[k];
+    if (refBin !== undefined && loginBin !== undefined) {
+      totalCompared++;
+      var isMatch = refBin === loginBin;
+      if (isMatch) matchCount++;
+      detailRows.push({ k: k, refVal: storedFrontalRef.ratios[k], refBin: refBin, loginVal: loginRatios[k], loginBin: loginBin, match: isMatch });
+    }
+  }
+
+  var matchRate = totalCompared > 0 ? matchCount / totalCompared : 0;
+  var matchPct = Math.round(matchRate * 100);
+
+  // Determine result
+  var passed = matchRate >= 0.80;
+  var warn = matchRate >= 0.65 && matchRate < 0.80;
+
+  lg('[Login] Match: ' + matchCount + '/' + totalCompared + ' (' + matchPct + '%)');
+
+  // Build result display
+  var cls = passed ? 'pass' : warn ? 'warn' : 'fail';
+  var html = '<div style="font-size:1.2em;font-weight:700;color:' + (passed ? '#0f0' : warn ? '#ffc107' : '#f44') + '">'
+    + (passed ? '\uD83D\uDD13 LOGIN PASSED' : warn ? '\u26a0\ufe0f ADDITIONAL VERIFICATION NEEDED' : '\uD83D\uDD12 LOGIN REJECTED')
+    + '</div>';
+
+  html += '<div style="font-size:2em;font-weight:800;color:' + (passed ? '#0f0' : warn ? '#ffc107' : '#f44') + ';margin:8px 0">'
+    + matchPct + '%</div>';
+  html += '<div style="font-size:.75em;color:#888">Bin match: ' + matchCount + '/' + totalCompared
+    + ' | Threshold: 80% | Frames: ' + frames.length + '</div>';
+
+  // Detail table
+  html += '<table style="width:100%;font-size:.6em;border-collapse:collapse;margin-top:10px">';
+  html += '<tr style="color:#00e5ff;border-bottom:2px solid #333">'
+    + '<th>Ratio</th>'
+    + '<th style="color:#0f0">Ref Val</th><th style="color:#0f0">Ref Bin</th>'
+    + '<th style="color:#ffc107">Login Val</th><th style="color:#ffc107">Login Bin</th>'
+    + '<th>Match</th></tr>';
+
+  for (var di = 0; di < detailRows.length; di++) {
+    var dr = detailRows[di];
+    html += '<tr style="border-bottom:1px solid #1a1a2a">'
+      + '<td style="color:#00e5ff">' + dr.k + '</td>'
+      + '<td>' + dr.refVal.toFixed(4) + '</td>'
+      + '<td style="color:#0f0">' + dr.refBin + '</td>'
+      + '<td>' + dr.loginVal.toFixed(4) + '</td>'
+      + '<td style="color:#ffc107">' + dr.loginBin + '</td>'
+      + '<td style="color:' + (dr.match ? '#0f0' : '#f44') + ';font-weight:700">' + (dr.match ? '\u2705' : '\u274c') + '</td>'
+      + '</tr>';
+  }
+  html += '</table>';
+
+  loginEl.className = cls;
+  loginEl.innerHTML = html;
+
+  st(passed ? '\uD83D\uDD13 Login passed (' + matchPct + '%)' : '\uD83D\uDD12 Login ' + (warn ? 'warning' : 'rejected') + ' (' + matchPct + '%)',
+    passed ? 'ok' : 'er');
+  enableButtons();
+}
+
+function doClear() {
+  allCaptures = [];
+  calibrationData = null;
+  dynamicExcluded = {};
+  storedFrontalRef = null;
+  document.getElementById('res').innerHTML = '';
+  document.getElementById('stab').style.display = 'none';
+  document.getElementById('uid-box').style.display = 'none';
+  document.getElementById('verify-box').style.display = 'none';
+  document.getElementById('ratio-detail').style.display = 'none';
+  document.getElementById('progress').style.display = 'none';
+  document.getElementById('multi-result').style.display = 'none';
+  document.getElementById('face3d-box').style.display = 'none';
+  document.getElementById('yaw-indicator').style.display = 'none';
+  document.getElementById('login-result').style.display = 'none';
+  document.getElementById('frontal-ref-badge').style.display = 'none';
+  document.getElementById('pin-result-box').style.display = 'none';
+  st('Cleared', 'ok');
+}
+window.doClear = doClear;
+
+// ============================================================
+// DISPLAY
+// ============================================================
+function displayUniqueId(cal) {
+  var box = document.getElementById('uid-box');
+  box.style.display = 'block';
+  box.className = '';
+  document.getElementById('uid-hash').textContent = cal.hash;
+  document.getElementById('uid-stats').innerHTML =
+    '<span>Whitelist: <b style="color:#0f0">' + cal.stableCount + '</b>/' + WHITELIST_RATIOS.length + '</span>'
+    + '<span>BW: ' + BIN_WIDTH + '</span>'
+    + '<span>Frames: ' + cal.frameCount + '</span>';
+}
+
+function displayRatioDetail(details) {
+  var grid = document.getElementById('ratio-grid');
+  var html = '';
+  for (var ki = 0; ki < RATIO_KEYS.length; ki++) {
+    var k = RATIO_KEYS[ki];
+    var d = details[k];
+    if (!d) continue;
+    var cls = d.stable ? 'stable' : (d.reason === 'excluded' || d.reason === 'not_whitelisted') ? 'excluded' : d.reason === 'boundary' ? 'boundary' : 'unstable';
+    var icon = d.stable ? '\u2705' : d.reason === 'excluded' ? '\uD83D\uDEAB' : d.reason === 'not_whitelisted' ? '\u2014' : d.reason === 'boundary' ? '\u26a0\ufe0f' : '\u274c';
+    html += '<div class="ratio-cell ' + cls + '">'
+      + '<div>' + icon + ' <b>' + k + '</b></div>'
+      + '<div class="rv">bin:' + d.bin + ' \u03c3:' + d.stdev.toFixed(4) + '</div>'
+      + '<div class="rv">' + Math.round(d.consistency * 100) + '% edge:' + d.distToEdge.toFixed(2) + '</div>'
+      + '</div>';
+  }
+  grid.innerHTML = html;
+  document.getElementById('ratio-detail').style.display = 'block';
+}
+
+// (renderSingleCaptures removed in v15)
 
 // ============================================================
 // Canvas helpers
 // ============================================================
-function drawGray(gray,cid){
-  var c=document.getElementById(cid);if(!c)return;
-  c.width=gray.width;c.height=gray.height;
-  var ctx=c.getContext('2d'),id=ctx.createImageData(gray.width,gray.height);
-  for(var i=0;i<gray.data.length;i++){id.data[i*4]=gray.data[i];id.data[i*4+1]=gray.data[i];id.data[i*4+2]=gray.data[i];id.data[i*4+3]=255}
-  ctx.putImageData(id,0,0);
-}
-
-function drawFloat(arr,size,cid){
-  var c=document.getElementById(cid);if(!c)return;
-  c.width=size;c.height=size;
-  var ctx=c.getContext('2d'),id=ctx.createImageData(size,size);
-  var mn=1e9,mx=-1e9;
-  for(var i=0;i<arr.length;i++){mn=Math.min(mn,arr[i]);mx=Math.max(mx,arr[i])}
-  var rg=mx-mn||1;
-  for(var i=0;i<arr.length;i++){
-    var v=Math.round((arr[i]-mn)/rg*255);
-    id.data[i*4]=v;id.data[i*4+1]=v;id.data[i*4+2]=v;id.data[i*4+3]=255;
+function drawGray(gray, cid) {
+  var c = document.getElementById(cid); if (!c) return;
+  c.width = gray.width; c.height = gray.height;
+  var ctx = c.getContext('2d'), id = ctx.createImageData(gray.width, gray.height);
+  for (var i = 0; i < gray.data.length; i++) {
+    id.data[i * 4] = gray.data[i]; id.data[i * 4 + 1] = gray.data[i]; id.data[i * 4 + 2] = gray.data[i]; id.data[i * 4 + 3] = 255;
   }
-  ctx.putImageData(id,0,0);
+  ctx.putImageData(id, 0, 0);
 }
 
 // ============================================================
-// Image Stability: SSIM + Diff
+// SSIM
 // ============================================================
-function computeSSIM(grayA,grayB){
-  // Simplified SSIM on grayscale images (must be same size)
-  var a=grayA.data,b=grayB.data,n=a.length;
-  if(a.length!==b.length)return 0;
-  var C1=6.5025,C2=58.5225; // (0.01*255)^2, (0.03*255)^2
-  // Global mean, variance, covariance
-  var ma=0,mb=0;
-  for(var i=0;i<n;i++){ma+=a[i];mb+=b[i]}
-  ma/=n;mb/=n;
-  var va=0,vb=0,cov=0;
-  for(var i=0;i<n;i++){
-    var da=a[i]-ma,db=b[i]-mb;
-    va+=da*da;vb+=db*db;cov+=da*db;
+function computeSSIM(grayA, grayB) {
+  var a = grayA.data, b = grayB.data, n = a.length;
+  if (a.length !== b.length) return 0;
+  var C1 = 6.5025, C2 = 58.5225;
+  var ma = 0, mb = 0;
+  for (var i = 0; i < n; i++) { ma += a[i]; mb += b[i] }
+  ma /= n; mb /= n;
+  var va = 0, vb = 0, cov = 0;
+  for (var i = 0; i < n; i++) {
+    var da = a[i] - ma, db = b[i] - mb;
+    va += da * da; vb += db * db; cov += da * db;
   }
-  va/=n;vb/=n;cov/=n;
-  return((2*ma*mb+C1)*(2*cov+C2))/((ma*ma+mb*mb+C1)*(va+vb+C2));
+  va /= n; vb /= n; cov /= n;
+  return ((2 * ma * mb + C1) * (2 * cov + C2)) / ((ma * ma + mb * mb + C1) * (va + vb + C2));
 }
 
-function computeDiff(grayA,grayB){
-  var a=grayA.data,b=grayB.data,w=grayA.width,h=grayA.height;
-  var diff=new Uint8Array(w*h);
-  var maxD=0;
-  for(var i=0;i<a.length;i++){
-    var d=Math.abs(a[i]-b[i]);
-    diff[i]=d;
-    if(d>maxD)maxD=d;
+// ============================================================
+// Utilities
+// ============================================================
+function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms) }) }
+
+function enableButtons() {
+  document.getElementById('b-3d-scan').disabled = false;
+  document.getElementById('b-3d-multi').disabled = false;
+  document.getElementById('b-login').disabled = false;
+  document.getElementById('b-clear').disabled = false;
+}
+
+function disableAllButtons() {
+  document.getElementById('b-3d-scan').disabled = true;
+  document.getElementById('b-3d-multi').disabled = true;
+  document.getElementById('b-login').disabled = true;
+  document.getElementById('b-clear').disabled = true;
+}
+
+// ============================================================
+// PIN BEHAVIOR FINGERPRINT TEST
+// ============================================================
+
+// --- Math helpers ---
+function pinMean(a) { if (!a.length) return 0; var s = 0; for (var i = 0; i < a.length; i++) s += a[i]; return s / a.length; }
+function pinStdDev(a) { if (a.length < 2) return 0; var m = pinMean(a), s = 0; for (var i = 0; i < a.length; i++) s += (a[i] - m) * (a[i] - m); return Math.sqrt(s / a.length); }
+function pinCV(a) { var m = pinMean(a); return m === 0 ? 0 : pinStdDev(a) / m; }
+function pinVariance(a) { if (a.length < 2) return 0; var m = pinMean(a), s = 0; for (var i = 0; i < a.length; i++) s += (a[i] - m) * (a[i] - m); return s / a.length; }
+function pinSkewness(a) {
+  if (a.length < 3) return 0;
+  var m = pinMean(a), sd = pinStdDev(a);
+  if (sd === 0) return 0;
+  var s = 0; for (var i = 0; i < a.length; i++) s += Math.pow((a[i] - m) / sd, 3);
+  return s / a.length;
+}
+
+// --- PIN state ---
+var pinState = null;
+
+function showPinOverlay(totalRounds, callback) {
+  pinState = {
+    currentPin: '', keypresses: [], allKeypresses: [],
+    startTime: 0, lastKeyTime: 0,
+    rounds: [], totalRounds: totalRounds, currentRound: 1,
+    callback: callback, currentTouchStart: null
+  };
+  var overlay = document.getElementById('pin-overlay');
+  overlay.style.display = 'flex';
+  updatePinDisplay();
+  updatePinRound();
+  document.getElementById('pin-status').textContent = 'Enter 6-digit PIN';
+  buildPinKeypad();
+}
+
+function hidePinOverlay() {
+  document.getElementById('pin-overlay').style.display = 'none';
+  pinState = null;
+}
+
+function buildPinKeypad() {
+  var pad = document.getElementById('pin-keypad');
+  var keys = ['1','2','3','4','5','6','7','8','9','','0','DEL'];
+  var html = '';
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k === '') {
+      html += '<div class="pin-key empty"></div>';
+    } else if (k === 'DEL') {
+      html += '<button class="pin-key delete" data-key="DEL">\u232b</button>';
+    } else {
+      html += '<button class="pin-key" data-key="' + k + '">' + k + '</button>';
+    }
   }
-  // Amplify for visibility (scale to 0-255)
-  if(maxD>0)for(var i=0;i<diff.length;i++)diff[i]=Math.round(diff[i]/maxD*255);
-  return{data:diff,width:w,height:h,maxDiff:maxD};
+  pad.innerHTML = html;
+  // Attach pointer events for timing
+  var btns = pad.querySelectorAll('.pin-key:not(.empty)');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].addEventListener('pointerdown', onPinPointerDown);
+    btns[i].addEventListener('pointerup', onPinPointerUp);
+  }
 }
 
-// ============================================================
-// BONE RATIOS from MediaPipe landmarks
-// ============================================================
-function d2(a,b){return Math.sqrt((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y))}
-
-function boneRatios(lm){
-  var fw=d2(lm[234],lm[454]),fh=d2(lm[10],lm[152]),ipd=d2(lm[33],lm[263]);
-  if(fw<.01||fh<.01||ipd<.01)return null;
-  return{
-    r01:ipd/fw,
-    r02:d2(lm[168],lm[1])/fh,
-    r03:d2(lm[61],lm[291])/ipd,
-    r05:d2(lm[10],lm[168])/fh,
-    r07:d2(lm[1],lm[152])/fh,
-    r08:d2(lm[33],lm[133])/ipd,
-    r09:d2(lm[70],lm[33])/fh,
-    r10:d2(lm[300],lm[263])/fh,
-    r11:d2(lm[98],lm[327])/fw,
-    r13:d2(lm[33],lm[61])/fh,
-    r14:d2(lm[263],lm[291])/fh,
-    r15:fw/fh,
+function onPinPointerDown(e) {
+  if (!pinState) return;
+  e.preventDefault();
+  var key = e.target.getAttribute('data-key');
+  if (!key) return;
+  var now = performance.now();
+  if (pinState.startTime === 0) pinState.startTime = now;
+  // Record key center for position offset calculation
+  var rect = e.target.getBoundingClientRect();
+  var keyCenterX = rect.left + rect.width / 2;
+  var keyCenterY = rect.top + rect.height / 2;
+  pinState.currentTouchStart = {
+    timestamp: now, x: e.clientX, y: e.clientY, key: key,
+    radiusX: e.width || 0, radiusY: e.height || 0,
+    rotationAngle: e.twist || 0, force: e.pressure || 0,
+    keyCenterX: keyCenterX, keyCenterY: keyCenterY,
+    keyWidth: rect.width, keyHeight: rect.height,
+    offsetX: (e.clientX - keyCenterX) / (rect.width / 2),   // normalized to [-1, 1]
+    offsetY: (e.clientY - keyCenterY) / (rect.height / 2)    // normalized to [-1, 1]
   };
 }
 
-// ============================================================
-// DEPTH — lazy load Depth Anything V2
-// ============================================================
-var depthLoaded=false,depthFailed=false;
+function onPinPointerUp(e) {
+  if (!pinState || !pinState.currentTouchStart) return;
+  e.preventDefault();
+  var ts = pinState.currentTouchStart;
+  var now = performance.now();
+  var key = ts.key;
 
-async function ensureDepth(){
-  if(depthLoaded)return true;
-  if(depthFailed)return false;
-  try{
-    st('Loading ORT + Depth model (27MB)...','ld');
-    await loadScript('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js');
-    ort.env.wasm.wasmPaths='https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
-    ort.env.wasm.numThreads=1;
-    ds=await ort.InferenceSession.create('/face-id-test/models/depth_anything_v2_small_int8.onnx',{executionProviders:['wasm'],graphOptimizationLevel:'all'});
-    depthLoaded=true;
-    lg('Depth model loaded OK');
-    return true;
-  }catch(e){
-    depthFailed=true;
-    lg('Depth model FAILED: '+e.message);
-    return false;
-  }
-}
+  var touchEnd = {
+    timestamp: now, x: e.clientX, y: e.clientY, key: key,
+    radiusX: e.width || 0, radiusY: e.height || 0,
+    rotationAngle: e.twist || 0, force: e.pressure || 0
+  };
 
-async function runDepth(v){
-  var S=518,tc=makeCanvas(S,S),tx=tc.getContext('2d');
-  tx.drawImage(v,0,0,S,S);
-  var id2=tx.getImageData(0,0,S,S).data;
-  var chw=new Float32Array(3*S*S),hw=S*S;
-  for(var i=0;i<hw;i++){chw[i]=id2[i*4]/255;chw[hw+i]=id2[i*4+1]/255;chw[2*hw+i]=id2[i*4+2]/255}
-  var inp=new ort.Tensor('float32',chw,[1,3,S,S]);
-  var t0=performance.now();
-  var out=await ds.run({[ds.inputNames[0]]:inp});
-  var ms=Math.round(performance.now()-t0);
-  inp.dispose();
-  // Free input buffer
-  chw=null;id2=null;
-  var ok=Object.keys(out)[0],dd=out[ok].data,dm=out[ok].dims;
-  var result=new Float32Array(dd);
-  out[ok].dispose();
-  return{data:result,h:dm[1],w:dm[2],ms:ms};
-}
+  var duration = now - ts.timestamp;
+  var interval = pinState.lastKeyTime > 0 ? ts.timestamp - pinState.lastKeyTime : null;
 
-// Face ellipse mask check for depth (scaled to any size, matches RGB mask)
-function inFaceMask(x,y,size){
-  var cx2=size/2,cy2=size*68/112,rx2=size*40/112,ry2=size*44/112;
-  var ddx=(x-cx2)/rx2,ddy=(y-cy2)/ry2;
-  return ddx*ddx+ddy*ddy<=1.0;
-}
+  var kp = {
+    key: key, touchStart: ts, touchEnd: touchEnd,
+    duration: duration, intervalFromPrevious: interval
+  };
 
-function alignDepth(dd,dH,dW,lm,size){
-  var src=getAlignPts(lm,dW,dH);
-  var ref=ARCFACE_REF.map(function(p){return[p[0]*size/112,p[1]*size/112]});
-  var t=simTransform(src,ref);
-  var det=t.a*t.a+t.b*t.b,out=new Float32Array(size*size);
-  for(var oy=0;oy<size;oy++)for(var ox=0;ox<size;ox++){
-    var dx2=ox-t.tx,dy=oy-t.ty;
-    var sx=Math.round((t.a*dx2+t.b*dy)/det),sy=Math.round((-t.b*dx2+t.a*dy)/det);
-    if(sx>=0&&sx<dW&&sy>=0&&sy<dH)out[oy*size+ox]=dd[sy*dW+sx];
-  }
-  // Normalize within face mask only
-  var mn=1e9,mx=-1e9;
-  for(var y=0;y<size;y++)for(var x=0;x<size;x++){
-    if(inFaceMask(x,y,size)){var v=out[y*size+x];if(v>0){mn=Math.min(mn,v);mx=Math.max(mx,v)}}
-  }
-  if(mn>=mx){mn=0;mx=1}var rg=mx-mn;
-  for(var y=0;y<size;y++)for(var x=0;x<size;x++){
-    if(inFaceMask(x,y,size))out[y*size+x]=(out[y*size+x]-mn)/rg;
-    else out[y*size+x]=0.5;
-  }
-  return{data:out,size:size};
-}
+  pinState.lastKeyTime = now;
+  pinState.currentTouchStart = null;
 
-function laplacian(da){
-  var d=da.data,S=da.size,lap=new Float32Array(S*S);
-  for(var y=2;y<S-2;y++)for(var x=2;x<S-2;x++){
-    if(inFaceMask(x,y,S))
-      lap[y*S+x]=d[y*S+x+1]+d[y*S+x-1]+d[(y+1)*S+x]+d[(y-1)*S+x]-4*d[y*S+x];
-  }
-  return{data:lap,size:S};
-}
-
-function curvFeats(lap){
-  var d=lap.data,S=lap.size,GR=4,cw=Math.floor(S/GR),feats=[];
-  for(var gy=0;gy<GR;gy++)for(var gx=0;gx<GR;gx++){
-    var ps=0,ns=0,pc=0,nc=0;
-    for(var y=gy*cw;y<(gy+1)*cw&&y<S;y++)for(var x=gx*cw;x<(gx+1)*cw&&x<S;x++){
-      if(!inFaceMask(x,y,S))continue; // skip outside face
-      var v=d[y*S+x];if(v>0){ps+=v;pc++}else if(v<0){ns+=v;nc++}
+  if (key === 'DEL') {
+    pinState.allKeypresses.push(kp);
+    if (pinState.currentPin.length > 0) {
+      pinState.currentPin = pinState.currentPin.slice(0, -1);
     }
-    feats.push(pc>0?ps/pc:0,nc>0?ns/nc:0,pc/(pc+nc+1));
+    updatePinDisplay();
+    return;
   }
-  return feats;
+
+  // Digit
+  pinState.allKeypresses.push(kp);
+  pinState.keypresses.push(kp);
+  pinState.currentPin += key;
+  updatePinDisplay();
+
+  if (pinState.currentPin.length === 6) {
+    // Round complete
+    var rawData = {
+      keypresses: pinState.keypresses.slice(),
+      allKeypresses: pinState.allKeypresses.slice(),
+      startTime: pinState.startTime,
+      endTime: now
+    };
+    pinState.rounds.push(rawData);
+
+    if (pinState.currentRound < pinState.totalRounds) {
+      pinState.currentRound++;
+      pinState.currentPin = '';
+      pinState.keypresses = [];
+      pinState.allKeypresses = [];
+      pinState.startTime = 0;
+      pinState.lastKeyTime = 0;
+      pinState.currentTouchStart = null;
+      updatePinRound();
+      updatePinDisplay();
+      document.getElementById('pin-status').textContent = 'Enter same PIN again (Round ' + pinState.currentRound + ')';
+    } else {
+      // All rounds done — delay hide to prevent click-through to buttons underneath
+      var rounds = pinState.rounds.slice();
+      var cb = pinState.callback;
+      setTimeout(function() {
+        hidePinOverlay();
+        if (cb) cb(rounds);
+      }, 300);
+    }
+  }
 }
 
-// ============================================================
-// Capture
-// ============================================================
-async function doCapture(){
-  if(!ready)return;
-  document.getElementById('b2').disabled=true;
-  document.getElementById('b3').disabled=true;
-  try{
-    st('Detecting face...','ld');
-    var mp=fl.detect(vid);
-    if(!mp.faceLandmarks||!mp.faceLandmarks.length){st('No face','er');document.getElementById('b2').disabled=false;document.getElementById('b3').disabled=false;return}
-    var lm=mp.faceLandmarks[0];
+function updatePinDisplay() {
+  var el = document.getElementById('pin-display');
+  var html = '';
+  for (var i = 0; i < 6; i++) {
+    html += '<div class="pin-dot' + (pinState && i < pinState.currentPin.length ? ' filled' : '') + '"></div>';
+  }
+  el.innerHTML = html;
+}
 
-    // Frontal pose check: nose tip should be centered between eyes
-    var noseX=lm[1].x;
-    var leftEyeX=(lm[33].x+lm[133].x)/2;
-    var rightEyeX=(lm[263].x+lm[362].x)/2;
-    var eyeMidX=(leftEyeX+rightEyeX)/2;
-    var eyeSpan=Math.abs(rightEyeX-leftEyeX);
-    var noseOffset=Math.abs(noseX-eyeMidX)/eyeSpan;  // 0=perfect center, >0.15=turned
-    var noseY=lm[1].y;
-    var foreheadY=lm[10].y;
-    var chinY=lm[152].y;
-    var faceH=chinY-foreheadY;
-    var noseFaceRatio=(noseY-foreheadY)/faceH;  // ~0.55=level, <0.5=looking up, >0.6=looking down
-    var yawOk=noseOffset<0.12;
-    var pitchOk=noseFaceRatio>0.45&&noseFaceRatio<0.65;
+function updatePinRound() {
+  if (!pinState) return;
+  var label = '';
+  if (pinState.totalRounds === 1) {
+    label = 'Login';
+  } else if (pinState.totalRounds === 2) {
+    label = 'Registration — Entry ' + pinState.currentRound + '/2';
+  } else if (pinState.totalRounds === 4) {
+    var regNum = pinState.currentRound <= 2 ? 'A' : 'B';
+    var inReg = pinState.currentRound <= 2 ? pinState.currentRound : pinState.currentRound - 2;
+    label = 'Reg ' + regNum + ' — Entry ' + inReg + '/2';
+  } else {
+    label = 'Round ' + pinState.currentRound + ' / ' + pinState.totalRounds;
+  }
+  document.getElementById('pin-round').textContent = label;
+}
 
-    if(!yawOk||!pitchOk){
-      st('Face not frontal (yaw='+noseOffset.toFixed(2)+', pitch='+noseFaceRatio.toFixed(2)+') — look straight at camera','er');
-      document.getElementById('b2').disabled=false;document.getElementById('b3').disabled=false;return;
+// --- Fingerprint calculation (ported from SDK) ---
+function calcPinFingerprint(rawData) {
+  var kps = rawData.keypresses;
+  var allKps = rawData.allKeypresses;
+
+  var keyDurations = kps.map(function(k) { return k.duration; });
+  var keyIntervals = kps.map(function(k) { return k.intervalFromPrevious; }).filter(function(v) { return v !== null; });
+
+  // Rhythm: interval ratios
+  var intervalRatios = [];
+  for (var i = 1; i < keyIntervals.length; i++) {
+    if (keyIntervals[i - 1] > 0) intervalRatios.push(keyIntervals[i] / keyIntervals[i - 1]);
+  }
+
+  // Touch physics
+  var rotAngles = kps.map(function(k) { return k.touchStart.rotationAngle; });
+  var forces = kps.map(function(k) { return k.touchStart.force; });
+  var driftX = kps.length >= 2 ? kps[kps.length - 1].touchStart.x - kps[0].touchStart.x : 0;
+  var driftY = kps.length >= 2 ? kps[kps.length - 1].touchStart.y - kps[0].touchStart.y : 0;
+
+  // Key transitions
+  var transitionTimes = [];
+  for (var i = 1; i < kps.length; i++) {
+    transitionTimes.push(kps[i].touchStart.timestamp - kps[i - 1].touchEnd.timestamp);
+  }
+
+  // Touch area
+  var radX = kps.map(function(k) { return k.touchStart.radiusX; });
+  var radY = kps.map(function(k) { return k.touchStart.radiusY; });
+  var avgRadii = kps.map(function(k) { return (k.touchStart.radiusX + k.touchStart.radiusY) / 2; });
+
+  // Error pattern
+  var deleteCount = 0, deletedDigits = 0, maxConsecDel = 0, consecDel = 0;
+  var correctionPositions = [];
+  for (var i = 0; i < allKps.length; i++) {
+    if (allKps[i].key === 'DEL') {
+      deleteCount++;
+      consecDel++;
+      if (consecDel > maxConsecDel) maxConsecDel = consecDel;
+      correctionPositions.push(i);
+    } else {
+      consecDel = 0;
     }
+  }
+  deletedDigits = deleteCount;
 
-    lg('Pose OK: yaw='+noseOffset.toFixed(3)+' pitch='+noseFaceRatio.toFixed(3));
+  return {
+    timing: {
+      keyDurations: keyDurations, keyIntervals: keyIntervals,
+      totalDuration: rawData.endTime - rawData.startTime,
+      durationMean: pinMean(keyDurations), durationStdDev: pinStdDev(keyDurations),
+      intervalMean: pinMean(keyIntervals), intervalStdDev: pinStdDev(keyIntervals),
+      intervalCV: pinCV(keyIntervals)
+    },
+    touchArea: {
+      radiusX: radX, radiusY: radY, avgRadius: pinMean(avgRadii),
+      radiusVariance: pinVariance(avgRadii),
+      hasRealTouchArea: pinMean(avgRadii) > 0.1
+    },
+    rhythm: {
+      intervalRatios: intervalRatios,
+      intervalRatioMean: pinMean(intervalRatios),
+      intervalRatioCV: pinCV(intervalRatios),
+      holdTimeSkewness: pinSkewness(keyDurations)
+    },
+    touchPhysics: {
+      rotationAngleMean: pinMean(rotAngles), rotationAngleCV: pinCV(rotAngles),
+      forceMean: pinMean(forces), forceCV: pinCV(forces),
+      positionDriftX: driftX, positionDriftY: driftY
+    },
+    keyTransition: {
+      transitionTimes: transitionTimes,
+      transitionMean: pinMean(transitionTimes),
+      transitionCV: pinCV(transitionTimes)
+    },
+    errorPattern: {
+      totalKeystrokes: allKps.length, deleteCount: deleteCount,
+      deletedDigits: deletedDigits,
+      errorRate: allKps.length > 0 ? deleteCount / allKps.length : 0,
+      correctionPositions: correctionPositions,
+      hasMultipleDeletes: maxConsecDel > 1,
+      maxConsecutiveDeletes: maxConsecDel
+    }
+  };
+}
 
-    st('RGB pipeline...','ld');
-    var aligned=arcfaceAlign(vid,lm,112);
-    var normResult=normalize(aligned);
-    var normed=normResult.final;
-    var steps=normResult.steps;
-    var ph=pHash(normed);
+// --- PIN Behavior v3: Press + Release dual-phase features ---
+// Extract maximum information from a SINGLE PIN entry using both
+// press-down (touchStart) and release (touchEnd) events.
+// No multi-round median needed — 2 rounds direct comparison.
 
-    // Bone ratios
-    st('Bone ratios...','ld');
-    var bones=boneRatios(lm);
-    lg('Bones: '+JSON.stringify(bones));
+// ============================================================
+// v5 — 確定版：只用瀏覽器可靠數據
+// pAng(5) + rAng(5) + dwP(6) + piC(10) + riC(10) + oDir(6) = 42 features
+// ============================================================
+function extractPinFeaturesV4(rawData) {
+  var kps = rawData.keypresses;
+  if (kps.length < 6) return null;
 
-    // Depth (lazy load, skip on OOM)
-    var depthResult=null,depthAligned=null,depthLap=null,depthCurv=null,depthMs=0;
-    var hasDepth=await ensureDepth();
-    if(hasDepth){
-      try{
-        st('Depth inference...','ld');
-        var dr=await runDepth(vid);
-        depthMs=dr.ms;
-        depthAligned=alignDepth(dr.data,dr.h,dr.w,lm,56);
-        depthLap=laplacian(depthAligned);
-        depthCurv=curvFeats(depthLap);
-        lg('Depth OK: '+depthMs+'ms, curv=['+depthCurv.slice(0,6).map(function(v){return v.toFixed(4)}).join(',')+',...]');
-      }catch(e){
-        lg('Depth capture failed: '+e.message);
-        depthFailed=true;
+  var features = [];
+
+  // === 基礎資料 ===
+  var pressIntervals = [];
+  for (var i = 1; i < kps.length; i++) {
+    pressIntervals.push(kps[i].touchStart.timestamp - kps[i-1].touchStart.timestamp);
+  }
+  var releaseIntervals = [];
+  for (var i = 1; i < kps.length; i++) {
+    releaseIntervals.push(kps[i].touchEnd.timestamp - kps[i-1].touchEnd.timestamp);
+  }
+  var dwells = [];
+  for (var i = 0; i < kps.length; i++) {
+    dwells.push(kps[i].duration);
+  }
+
+  // --- A. Press Angles (5): pAng[i] — 八分位方向，100% 穩定 ---
+  for (var i = 1; i < kps.length; i++) {
+    var dx = kps[i].touchStart.x - kps[i-1].touchStart.x;
+    var dy = kps[i].touchStart.y - kps[i-1].touchStart.y;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+    var oct;
+    if (dist < 5) { oct = 8; }
+    else {
+      var ang = Math.atan2(dy, dx) * 180 / Math.PI;
+      oct = Math.round(((ang + 180) % 360) / 45);
+      if (oct >= 8) oct = 0;
+    }
+    features.push({ id: 'pAng' + i, value: oct, binWidth: 1 });
+  }
+
+  // --- B. Release Angles (5): rAng[i] — 100% 穩定 ---
+  for (var i = 0; i < kps.length - 1; i++) {
+    var dx = kps[i+1].touchStart.x - kps[i].touchEnd.x;
+    var dy = kps[i+1].touchStart.y - kps[i].touchEnd.y;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+    var oct;
+    if (dist < 5) { oct = 8; }
+    else {
+      var ang = Math.atan2(dy, dx) * 180 / Math.PI;
+      oct = Math.round(((ang + 180) % 360) / 45);
+      if (oct >= 8) oct = 0;
+    }
+    features.push({ id: 'rAng' + (i+1), value: oct, binWidth: 1 });
+  }
+
+  // --- C. Dwell Proportions (6): dwP[i] — 每鍵按住時間佔總 dwell 比例 ---
+  var dwellSum = dwells.reduce(function(a,b){ return a+b; }, 0);
+  for (var i = 0; i < 6; i++) {
+    features.push({
+      id: 'dwP' + (i+1),
+      value: dwellSum > 0 ? dwells[i] / dwellSum : 0,
+      binWidth: 0.10
+    });
+  }
+
+  // --- C2. Dwell Max/Min Key Index (2) ---
+  // 哪個鍵按最久、哪個最短
+  var maxDwIdx = 0, minDwIdx = 0;
+  for (var i = 1; i < 6; i++) {
+    if (dwells[i] > dwells[maxDwIdx]) maxDwIdx = i;
+    if (dwells[i] < dwells[minDwIdx]) minDwIdx = i;
+  }
+  features.push({ id: 'dwMax', value: maxDwIdx + 1, binWidth: 1 });
+  features.push({ id: 'dwMin', value: minDwIdx + 1, binWidth: 1 });
+
+  // --- D. Press Interval Comparisons (10): piC[i]v[j] — 二元比較 ---
+  for (var i = 0; i < pressIntervals.length; i++) {
+    for (var j = i + 1; j < pressIntervals.length; j++) {
+      features.push({
+        id: 'piC' + (i+1) + 'v' + (j+1),
+        value: pressIntervals[i] > pressIntervals[j] ? 1 : 0,
+        binWidth: 1
+      });
+    }
+  }
+
+  // --- E. Release Interval Comparisons (10): riC[i]v[j] — 二元比較 ---
+  for (var i = 0; i < releaseIntervals.length; i++) {
+    for (var j = i + 1; j < releaseIntervals.length; j++) {
+      features.push({
+        id: 'riC' + (i+1) + 'v' + (j+1),
+        value: releaseIntervals[i] > releaseIntervals[j] ? 1 : 0,
+        binWidth: 1
+      });
+    }
+  }
+
+  // --- F. Dwell Comparisons (15): dwC[i]v[j] — 按住時間排序 ---
+  // 不同手指按壓節奏不同，哪個鍵按比較久的排序會變
+  for (var i = 0; i < dwells.length; i++) {
+    for (var j = i + 1; j < dwells.length; j++) {
+      var diff = dwells[i] - dwells[j];
+      var val;
+      if (Math.abs(diff) < 10) { val = 2; } // 差<10ms → 平手
+      else { val = diff > 0 ? 1 : 0; }
+      features.push({
+        id: 'dwC' + (i+1) + 'v' + (j+1),
+        value: val,
+        binWidth: 1
+      });
+    }
+  }
+
+  // --- G. Flight Time Comparisons (10): flC[i]v[j] — 飛行時間排序 ---
+  // flight = 釋放鍵i到按下鍵i+1 的間隔，不同手指移動動態不同
+  var flights = [];
+  for (var i = 0; i < kps.length - 1; i++) {
+    flights.push(kps[i+1].touchStart.timestamp - kps[i].touchEnd.timestamp);
+  }
+  for (var i = 0; i < flights.length; i++) {
+    for (var j = i + 1; j < flights.length; j++) {
+      var diff = flights[i] - flights[j];
+      var val;
+      if (Math.abs(diff) < 10) { val = 2; } // 差<10ms → 平手
+      else { val = diff > 0 ? 1 : 0; }
+      features.push({
+        id: 'flC' + (i+1) + 'v' + (j+1),
+        value: val,
+        binWidth: 1
+      });
+    }
+  }
+
+  // --- H. Touch Offset Direction (6): oDir[i] — 每鍵觸控偏移方向 ---
+  for (var i = 0; i < kps.length; i++) {
+    var ox = kps[i].touchStart.offsetX || 0;
+    var oy = kps[i].touchStart.offsetY || 0;
+    var odist = Math.sqrt(ox*ox + oy*oy);
+    var odirOct;
+    if (odist < 0.15) { odirOct = 8; }
+    else {
+      var oang = Math.atan2(oy, ox) * 180 / Math.PI;
+      odirOct = Math.round(((oang + 180) % 360) / 45);
+      if (odirOct >= 8) odirOct = 0;
+    }
+    features.push({ id: 'oDir' + (i+1), value: odirOct, binWidth: 1 });
+  }
+
+  return features;
+  // 67 features: 5 pAng + 5 rAng + 6 dwP + 10 piC + 10 riC + 15 dwC + 10 flC + 6 oDir
+}
+
+// Quantize: same as FaceID — round(value / binWidth)
+function pinQuantize(value, binWidth) { return Math.round(value / binWidth); }
+
+// Compute SHA-256 hash from features
+async function computePinHash(features, whitelist) {
+  var parts = [];
+  for (var i = 0; i < features.length; i++) {
+    var f = features[i];
+    if (!whitelist || whitelist.indexOf(f.id) >= 0) {
+      var bin = pinQuantize(f.value, f.binWidth);
+      parts.push(f.id + ':' + bin);
+    }
+  }
+  var hashInput = parts.join('|');
+  var hash = await sha256hex(hashInput);
+  return { hash: hash, hashInput: hashInput, features: features };
+}
+
+// PIN v7 Whitelist — 只保留有區分力的特徵，移除所有穩定但無區分力的
+// 穩定基底(pAng1-3,5 rAng1-3,5 piC1v2-4 riC1v2-4 flC1v2-4)永遠 match → 稀釋 GAP → 移除
+var PIN_WHITELIST = [
+  // 角度類：只有 pAng4/rAng4 在異指時會變
+  'pAng4', 'rAng4',
+  // Dwell proportions (6) — 異指時 dwell 分佈不同
+  'dwP1', 'dwP2', 'dwP3', 'dwP4', 'dwP5', 'dwP6',
+  // Dwell max/min key (2) — 最長/最短鍵異指會變
+  'dwMax', 'dwMin',
+  // 邊界間隔比較 — 只有 1v5 有時會翻
+  'piC1v5', 'riC1v5', 'flC1v5',
+  // 中段間隔比較 — 有時會翻
+  'piC3v5', 'riC3v5', 'flC3v5'
+];
+
+// Compute median of an array of feature sets → one median feature set
+// Same approach as FaceID multi-frame median
+function medianPinFeatures(featureSets) {
+  var nFeatures = featureSets[0].length;
+  var result = [];
+  for (var i = 0; i < nFeatures; i++) {
+    var values = [];
+    for (var r = 0; r < featureSets.length; r++) {
+      values.push(featureSets[r][i].value);
+    }
+    values.sort(function(a, b) { return a - b; });
+    var median;
+    if (values.length % 2 === 0) {
+      // Even count: average of two middle values
+      median = (values[values.length / 2 - 1] + values[values.length / 2]) / 2;
+    } else {
+      median = values[Math.floor(values.length / 2)];
+    }
+    result.push({
+      id: featureSets[0][i].id,
+      value: median,
+      binWidth: featureSets[0][i].binWidth
+    });
+  }
+  return result;
+}
+
+// --- PIN Test UI (v3: Press + Release dual-phase) ---
+// Product flow: Registration = enter PIN 2 times → median → hash
+//               Login = enter PIN 1 time → bins → compare vs stored (≥80%)
+
+var PIN_LOGIN_THRESHOLD = 0.80;  // 80% bin match → pass
+var storedPinBins = null;  // stored registration bins (local, like FaceID frontal bins)
+var storedPinHash = null;  // stored registration hash
+var storedPinDigits = null;  // stored PIN digits (for basic verification)
+
+// Extract PIN digit string from round data
+function getPinDigits(roundData) {
+  return roundData.keypresses.map(function(kp) { return kp.key; }).join('');
+}
+
+// PIN Reg: simulate registration — 2 entries → median → hash + store bins
+function doPinTest() {
+  showPinOverlay(2, function(rounds) {
+    var processRounds = async function() {
+      // Verify both entries have same PIN digits
+      var pin1 = getPinDigits(rounds[0]);
+      var pin2 = getPinDigits(rounds[1]);
+      if (pin1 !== pin2) {
+        alert('PIN mismatch! Entry 1: ' + pin1 + ', Entry 2: ' + pin2 + '. Please try again.');
+        return;
       }
-    }
 
-    var ssimVal=null,diffImg=null;
-    if(caps.length>0){
-      ssimVal=computeSSIM(caps[0].normed,normed);
-      diffImg=computeDiff(caps[0].normed,normed);
-    }
+      var f1 = extractPinFeaturesV4(rounds[0]);
+      var f2 = extractPinFeaturesV4(rounds[1]);
+      if (!f1 || !f2) { alert('PIN data insufficient'); return; }
 
-    var n=caps.length+1;
-    caps.push({n:n,aligned:aligned,normed:normed,steps:steps,ph:ph,ssim:ssimVal,diff:diffImg,
-               bones:bones,depthAligned:depthAligned,depthLap:depthLap,depthCurv:depthCurv,depthMs:depthMs});
-    render();
-    var msg='#'+n+(ssimVal!==null?' SSIM:'+ssimVal.toFixed(4):'');
-    if(depthMs>0)msg+=' depth:'+depthMs+'ms';
-    if(!hasDepth)msg+=' (no depth)';
-    st(msg,'ok');
-  }catch(e){st('Capture error: '+e.message,'er');console.error(e)}
-  document.getElementById('b2').disabled=false;
-  document.getElementById('b3').disabled=false;
+      // Median of 2 entries = registration fingerprint
+      var median = medianPinFeatures([f1, f2]);
+      var result = await computePinHash(median, PIN_WHITELIST);
+      var fp = calcPinFingerprint(rounds[1]);
+
+      // Store PIN digits + bins for login comparison
+      storedPinDigits = pin1;
+      storedPinBins = {};
+      for (var i = 0; i < median.length; i++) {
+        var f = median[i];
+        if (PIN_WHITELIST && PIN_WHITELIST.indexOf(f.id) < 0) continue;
+        storedPinBins[f.id] = pinQuantize(f.value, f.binWidth);
+      }
+      storedPinHash = result.hash;
+      document.getElementById('b-pin-login').disabled = false;
+      document.getElementById('b-pin-login').style.opacity = '1';
+
+      renderPinResult({
+        hashes: [result],
+        featureSets: [median],
+        fingerprints: [fp],
+        rawSets: [f1, f2]
+      });
+    };
+    processRounds();
+  });
 }
-window.doCapture=doCapture;
 
-async function doCapture5(){for(var i=0;i<5;i++){await doCapture();await new Promise(function(r){setTimeout(r,500)})}}
-window.doCapture5=doCapture5;
+// PIN Multi: simulate 2 registrations — 2+2=4 entries → 2 median hashes → compare
+function doPinMultiTest() {
+  showPinOverlay(4, function(rounds) {
+    var processRounds = async function() {
+      var f1 = extractPinFeaturesV4(rounds[0]);
+      var f2 = extractPinFeaturesV4(rounds[1]);
+      var f3 = extractPinFeaturesV4(rounds[2]);
+      var f4 = extractPinFeaturesV4(rounds[3]);
+      if (!f1 || !f2 || !f3 || !f4) { alert('PIN data insufficient'); return; }
 
-function doClear(){caps=[];document.getElementById('res').innerHTML='';document.getElementById('stab').style.display='none'}
-window.doClear=doClear;
+      // Registration A: median of entries 1+2
+      var medianA = medianPinFeatures([f1, f2]);
+      var hashA = await computePinHash(medianA, PIN_WHITELIST);
 
-// ============================================================
-// Render
-// ============================================================
-function hm(a,b){return a.ha===b.ha||a.hb===b.ha||a.ha===b.hb||a.hb===b.hb}
+      // Registration B: median of entries 3+4
+      var medianB = medianPinFeatures([f3, f4]);
+      var hashB = await computePinHash(medianB, PIN_WHITELIST);
 
-function render(){
-  var el=document.getElementById('res'),f0=caps[0],html='';
-  for(var ci=0;ci<caps.length;ci++){
-    var c=caps[ci];
-    var id='c'+c.n;
-    var ssimStr=c.ssim!==null?'SSIM:'+c.ssim.toFixed(4):'(ref)';
-    var ssimCol=c.ssim===null?'cn':c.ssim>=0.98?'mt':c.ssim>=0.90?'cn':'df';
+      var fp = calcPinFingerprint(rounds[3]);
 
-    html+='<div class="card"><h3><span class="cn">#'+c.n+'</span> <span class="'+ssimCol+'">'+ssimStr+'</span></h3>';
-    html+='<div class="pipeline">';
-    html+='<div class="stage"><canvas id="'+id+'_a" width="112" height="112"></canvas><div class="lbl">aligned</div></div>';
-    html+='<div class="stage"><canvas id="'+id+'_n" width="112" height="112"></canvas><div class="lbl">normalized</div></div>';
-    if(c.depthAligned)html+='<div class="stage"><canvas id="'+id+'_da" width="56" height="56"></canvas><div class="lbl">depth</div></div>';
-    if(c.depthLap)html+='<div class="stage"><canvas id="'+id+'_dl" width="56" height="56"></canvas><div class="lbl">laplacian</div></div>';
-    if(c.diff)html+='<div class="stage"><canvas id="'+id+'_d" width="112" height="112"></canvas><div class="lbl">diff</div></div>';
-    html+='</div>';
+      renderPinResult({
+        hashes: [hashA, hashB],
+        featureSets: [medianA, medianB],
+        fingerprints: [fp, fp],
+        isMulti: true,
+        isMedian: true
+      });
+    };
+    processRounds();
+  });
+}
 
-    // Bone ratios comparison
-    if(c.bones&&f0.bones){
-      var bKeys=Object.keys(c.bones);
-      var bMatch=0;
-      for(var bi=0;bi<bKeys.length;bi++){
-        var bw2=0.05;
-        if(Math.round(c.bones[bKeys[bi]]/bw2)===Math.round(f0.bones[bKeys[bi]]/bw2))bMatch++;
+// PIN Login: 1 entry → compare bins against stored registration bins
+function doPinLoginTest() {
+  if (!storedPinBins) { alert('Please register first (PIN Reg)'); return; }
+  showPinOverlay(1, function(rounds) {
+    var processRounds = async function() {
+      // Step 1: Verify PIN digits match
+      var loginPin = getPinDigits(rounds[0]);
+      var pinMatch = loginPin === storedPinDigits;
+
+      var features = extractPinFeaturesV4(rounds[0]);
+      if (!features) { alert('PIN data insufficient'); return; }
+
+      // Compute login bins (whitelisted only)
+      var loginBins = {};
+      for (var i = 0; i < features.length; i++) {
+        var f = features[i];
+        if (PIN_WHITELIST && PIN_WHITELIST.indexOf(f.id) < 0) continue;
+        loginBins[f.id] = pinQuantize(f.value, f.binWidth);
       }
-      html+='<div class="hr"><span class="lb">Bones:</span><span class="hv"><span class="'+(bMatch===bKeys.length?'mt':'cn')+'">'+bMatch+'/'+bKeys.length+' bins match</span> ';
-      // Show each ratio value
-      for(var bi=0;bi<bKeys.length;bi++){
-        var k=bKeys[bi],v1=f0.bones[k],v2=c.bones[k];
-        var same=Math.round(v1/0.05)===Math.round(v2/0.05);
-        html+='<span style="color:'+(same?'#0f0':'#f44')+'">'+k+':'+v2.toFixed(3)+' </span>';
-      }
-      html+='</span></div>';
-    }
 
-    // Depth curvature comparison
-    if(c.depthCurv&&f0.depthCurv){
-      var dBins=c.depthCurv.map(function(v){return Math.round(v/0.002)});
-      var dBins0=f0.depthCurv.map(function(v){return Math.round(v/0.002)});
-      var dMatch=0;
-      for(var di=0;di<dBins.length;di++)if(dBins[di]===dBins0[di])dMatch++;
-      html+='<div class="hr"><span class="lb">Depth:</span><span class="hv"><span class="'+(dMatch===dBins.length?'mt':dMatch>=dBins.length*0.8?'cn':'df')+'">'+dMatch+'/'+dBins.length+' bins match</span> ('+c.depthMs+'ms)</span></div>';
-    }else if(!c.depthCurv){
-      html+='<div class="hr"><span class="lb">Depth:</span><span class="hv" style="color:#666">skipped</span></div>';
-    }
-
-    html+='<div class="hr"><span class="lb">pHash:</span><span class="hv" style="color:'+(c.ph.p4.hex===f0.ph.p4.hex?'#0f0':'#f44')+'">'+c.ph.p4.hex+'</span></div>';
-    html+='</div>';
-  }
-  el.innerHTML=html;
-
-  // Draw canvases
-  for(var ci=0;ci<caps.length;ci++){
-    var c=caps[ci],id='c'+c.n;
-    var ac=document.getElementById(id+'_a');
-    if(ac)ac.getContext('2d').putImageData(c.aligned,0,0);
-    drawGray(c.normed,id+'_n');
-    if(c.depthAligned)drawFloat(c.depthAligned.data,c.depthAligned.size,id+'_da');
-    if(c.depthLap)drawFloat(c.depthLap.data,c.depthLap.size,id+'_dl');
-    if(c.diff)drawDiffHeatmap(c.diff,id+'_d');
-  }
-
-  // Stability
-  if(caps.length>=2){
-    var t=caps.length-1,ssims=[];
-    var boneTotals=[],boneMatches=[];
-    var depthTotals=[],depthMatches=[];
-    for(var i=1;i<caps.length;i++){
-      ssims.push(caps[i].ssim);
-      // Bone match count
-      if(caps[i].bones&&f0.bones){
-        var bk=Object.keys(caps[i].bones),bm=0;
-        for(var j=0;j<bk.length;j++){
-          if(Math.round(caps[i].bones[bk[j]]/0.05)===Math.round(f0.bones[bk[j]]/0.05))bm++;
+      // Compare against stored registration bins
+      var matchCount = 0, totalCompared = 0;
+      var details = [];
+      var keys = Object.keys(storedPinBins);
+      for (var i = 0; i < keys.length; i++) {
+        var id = keys[i];
+        var refBin = storedPinBins[id];
+        var loginBin = loginBins[id] !== undefined ? loginBins[id] : null;
+        var match = loginBin !== null && loginBin === refBin;
+        totalCompared++;
+        if (match) matchCount++;
+        // Find raw value from features
+        var rawVal = null;
+        for (var j = 0; j < features.length; j++) {
+          if (features[j].id === id) { rawVal = features[j].value; break; }
         }
-        boneTotals.push(bk.length);boneMatches.push(bm);
+        details.push({ id: id, refBin: refBin, loginBin: loginBin, rawVal: rawVal, match: match });
       }
-      // Depth match count
-      if(caps[i].depthCurv&&f0.depthCurv){
-        var dm2=0;
-        for(var j=0;j<caps[i].depthCurv.length;j++){
-          if(Math.round(caps[i].depthCurv[j]/0.002)===Math.round(f0.depthCurv[j]/0.002))dm2++;
-        }
-        depthTotals.push(caps[i].depthCurv.length);depthMatches.push(dm2);
+
+      var matchRate = totalCompared > 0 ? matchCount / totalCompared : 0;
+      // Must pass BOTH: correct PIN digits AND behavioral match ≥80%
+      var passed = pinMatch && matchRate >= PIN_LOGIN_THRESHOLD;
+
+      renderPinLoginResult({
+        matchCount: matchCount,
+        totalCompared: totalCompared,
+        matchRate: matchRate,
+        passed: passed,
+        pinMatch: pinMatch,
+        loginPin: loginPin,
+        details: details,
+        storedHash: storedPinHash,
+        fingerprint: calcPinFingerprint(rounds[0])
+      });
+    };
+    processRounds();
+  });
+}
+
+// ============================================================
+// Touch Test — single button, repeated taps, compare fingers
+// ============================================================
+var touchTestData = { groupA: null, groupB: null };
+
+function doTouchTest() {
+  touchTestData = { groupA: null, groupB: null };
+  showTouchOverlay('A');
+}
+
+function showTouchOverlay(group) {
+  var overlay = document.getElementById('pin-overlay');
+  overlay.style.display = 'flex';
+  var container = overlay.querySelector('.pin-container') || overlay.children[0];
+  container.innerHTML = '';
+
+  var title = document.createElement('div');
+  title.style.cssText = 'color:#00e5ff;font-weight:700;font-size:1.2em;margin-bottom:10px';
+  title.textContent = 'Touch Test — Group ' + group;
+  container.appendChild(title);
+
+  var subtitle = document.createElement('div');
+  subtitle.style.cssText = 'color:#888;font-size:.8em;margin-bottom:15px';
+  subtitle.textContent = group === 'A' ? 'Tap the button 10 times with ONE finger' : 'Now tap 10 times with a DIFFERENT finger';
+  container.appendChild(subtitle);
+
+  var countEl = document.createElement('div');
+  countEl.style.cssText = 'color:#fff;font-size:1.5em;font-weight:700;margin-bottom:15px';
+  countEl.textContent = '0 / 10';
+  container.appendChild(countEl);
+
+  var btn = document.createElement('button');
+  btn.style.cssText = 'width:120px;height:120px;border-radius:50%;background:#a855f7;color:#fff;font-size:2em;font-weight:700;border:3px solid #c084fc;cursor:pointer;touch-action:manipulation;user-select:none';
+  btn.textContent = 'TAP';
+  container.appendChild(btn);
+
+  var taps = [];
+  var pendingTouch = null;
+
+  // Capture TouchEvent data (has rotationAngle, radiusX, radiusY)
+  btn.addEventListener('touchstart', function(e) {
+    if (e.touches.length > 0) {
+      var t = e.touches[0];
+      pendingTouch = {
+        touchRadiusX: t.radiusX || 0,
+        touchRadiusY: t.radiusY || 0,
+        touchRotationAngle: t.rotationAngle || 0,
+        touchForce: t.force || 0,
+        touchId: t.identifier
+      };
+    }
+  }, { passive: true });
+
+  btn.addEventListener('touchend', function(e) {
+    if (e.changedTouches.length > 0) {
+      var t = e.changedTouches[0];
+      var last = taps[taps.length - 1];
+      if (last) {
+        last.touchUpRadiusX = t.radiusX || 0;
+        last.touchUpRadiusY = t.radiusY || 0;
+        last.touchUpRotationAngle = t.rotationAngle || 0;
+        last.touchUpForce = t.force || 0;
       }
     }
-    var avgS=(ssims.reduce(function(a,b){return a+b},0)/ssims.length).toFixed(4);
-    var minS=Math.min.apply(null,ssims).toFixed(4);
-    var avgBone=boneMatches.length>0?(boneMatches.reduce(function(a,b){return a+b},0)/boneMatches.length).toFixed(1):'—';
-    var avgDepth=depthMatches.length>0?(depthMatches.reduce(function(a,b){return a+b},0)/depthMatches.length).toFixed(1):'—';
-    var bTotal=boneTotals.length>0?boneTotals[0]:12;
-    var dTotal=depthTotals.length>0?depthTotals[0]:48;
-    var sc=function(v){return v>=0.98?'g':v>=0.90?'m':'b'};
-    var bc=function(v,t2){return v>=t2?'g':v>=t2*0.8?'m':'b'};
+  }, { passive: true });
 
-    document.getElementById('stab').style.display='block';
-    document.getElementById('stab').innerHTML='<h2 style="color:#ffc107;margin-bottom:8px">STABILITY ('+caps.length+' caps)</h2>'
-      +'<div class="row3">'
-      +'<div><div class="sm">SSIM</div><div class="pct '+sc(parseFloat(avgS))+'">'+avgS+'</div><div class="sm">min='+minS+'</div></div>'
-      +'<div><div class="sm">Bone ('+bTotal+' ratios)</div><div class="pct '+bc(parseFloat(avgBone),bTotal)+'">'+avgBone+'/'+bTotal+'</div><div class="sm">avg bins match</div></div>'
-      +'<div><div class="sm">Depth ('+dTotal+' feats)</div><div class="pct '+bc(parseFloat(avgDepth),dTotal)+'">'+avgDepth+'/'+dTotal+'</div><div class="sm">avg bins match</div></div>'
-      +'</div>';
+  btn.addEventListener('pointerdown', function(e) {
+    e.preventDefault();
+    var rect = e.target.getBoundingClientRect();
+    var tap = {
+      phase: 'down',
+      timestamp: performance.now(),
+      x: e.clientX, y: e.clientY,
+      // PointerEvent properties
+      pe_width: e.width || 0, pe_height: e.height || 0,
+      pe_pressure: e.pressure || 0, pe_twist: e.twist || 0,
+      pe_tiltX: e.tiltX || 0, pe_tiltY: e.tiltY || 0,
+      pe_tangentialPressure: e.tangentialPressure || 0,
+      pe_pointerType: e.pointerType,
+      pe_isPrimary: e.isPrimary,
+      // TouchEvent properties (captured from touchstart)
+      te_radiusX: pendingTouch ? pendingTouch.touchRadiusX : -1,
+      te_radiusY: pendingTouch ? pendingTouch.touchRadiusY : -1,
+      te_rotationAngle: pendingTouch ? pendingTouch.touchRotationAngle : -1,
+      te_force: pendingTouch ? pendingTouch.touchForce : -1,
+      // Button geometry
+      btnW: rect.width, btnH: rect.height,
+      btnCX: rect.left + rect.width / 2,
+      btnCY: rect.top + rect.height / 2,
+      // Offset from button center (normalized)
+      offsetX: (e.clientX - (rect.left + rect.width / 2)) / (rect.width / 2),
+      offsetY: (e.clientY - (rect.top + rect.height / 2)) / (rect.height / 2)
+    };
+    pendingTouch = null;
+    taps.push(tap);
+  });
+  btn.addEventListener('pointerup', function(e) {
+    e.preventDefault();
+    var last = taps[taps.length - 1];
+    if (!last || last.phase !== 'down') return;
+    last.upTimestamp = performance.now();
+    last.upX = e.clientX;
+    last.upY = e.clientY;
+    last.pe_upWidth = e.width || 0;
+    last.pe_upHeight = e.height || 0;
+    last.pe_upPressure = e.pressure || 0;
+    last.pe_upTwist = e.twist || 0;
+    last.duration = last.upTimestamp - last.timestamp;
+    last.phase = 'complete';
+
+    var completeCount = taps.filter(function(t) { return t.phase === 'complete'; }).length;
+    countEl.textContent = completeCount + ' / 10';
+
+    if (completeCount >= 10) {
+      setTimeout(function() {
+        touchTestData['group' + group] = taps.filter(function(t) { return t.phase === 'complete'; });
+        if (group === 'A') {
+          showTouchOverlay('B');
+        } else {
+          overlay.style.display = 'none';
+          rebuildPinOverlay();
+          renderTouchTestResult();
+        }
+      }, 300);
+    }
+  });
+
+  var cancelBtn = document.createElement('button');
+  cancelBtn.style.cssText = 'margin-top:15px;background:#333;color:#888;border:1px solid #555;padding:8px 20px;border-radius:6px;cursor:pointer';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = function() {
+    overlay.style.display = 'none';
+    rebuildPinOverlay();
+  };
+  container.appendChild(document.createElement('br'));
+  container.appendChild(cancelBtn);
+}
+
+function rebuildPinOverlay() {
+  var overlay = document.getElementById('pin-overlay');
+  var container = overlay.querySelector('.pin-container') || overlay.children[0];
+  container.innerHTML = '<div id="pin-round" style="color:#00e5ff;font-weight:700;font-size:.9em;margin-bottom:4px"></div>' +
+    '<div id="pin-display" style="display:flex;gap:8px;justify-content:center;margin:10px 0"></div>' +
+    '<div id="pin-status" style="font-size:.75em;color:#888;margin-bottom:10px"></div>' +
+    '<div id="pin-keypad" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:280px;max-width:100%"></div>' +
+    '<button id="pin-cancel" onclick="hidePinOverlay()" style="margin-top:10px;background:#333;color:#888;border:1px solid #555;padding:6px 16px;border-radius:6px;cursor:pointer">Cancel</button>';
+}
+
+function renderTouchTestResult() {
+  var box = document.getElementById('pin-result-box');
+  box.style.display = 'block';
+  var a = touchTestData.groupA;
+  var b = touchTestData.groupB;
+  if (!a || !b) return;
+
+  var html = '<div style="color:#06b6d4;font-weight:700;font-size:1em;margin-bottom:10px">Touch Test — Finger A vs Finger B</div>';
+
+  // Compute averages for each group
+  function avg(arr, fn) {
+    var s = 0; for (var i = 0; i < arr.length; i++) s += fn(arr[i]);
+    return s / arr.length;
+  }
+
+  var props = [
+    { name: 'PE width (down)', fn: function(t) { return t.pe_width; } },
+    { name: 'PE height (down)', fn: function(t) { return t.pe_height; } },
+    { name: 'PE aspect (w/h)', fn: function(t) { return t.pe_height > 0 ? t.pe_width / t.pe_height : 0; } },
+    { name: 'PE pressure', fn: function(t) { return t.pe_pressure; } },
+    { name: 'PE twist', fn: function(t) { return t.pe_twist; } },
+    { name: 'PE tiltX', fn: function(t) { return t.pe_tiltX; } },
+    { name: 'PE tiltY', fn: function(t) { return t.pe_tiltY; } },
+    { name: 'PE tangential', fn: function(t) { return t.pe_tangentialPressure; } },
+    { name: 'PE width (up)', fn: function(t) { return t.pe_upWidth; } },
+    { name: 'PE height (up)', fn: function(t) { return t.pe_upHeight; } },
+    { name: 'TE radiusX', fn: function(t) { return t.te_radiusX; } },
+    { name: 'TE radiusY', fn: function(t) { return t.te_radiusY; } },
+    { name: 'TE aspect (rX/rY)', fn: function(t) { return t.te_radiusY > 0 ? t.te_radiusX / t.te_radiusY : 0; } },
+    { name: 'TE rotationAngle', fn: function(t) { return t.te_rotationAngle; } },
+    { name: 'TE force', fn: function(t) { return t.te_force; } },
+    { name: 'TE up radiusX', fn: function(t) { return t.touchUpRadiusX || 0; } },
+    { name: 'TE up radiusY', fn: function(t) { return t.touchUpRadiusY || 0; } },
+    { name: 'TE up rotAngle', fn: function(t) { return t.touchUpRotationAngle || 0; } },
+    { name: 'TE up force', fn: function(t) { return t.touchUpForce || 0; } },
+    { name: 'duration (ms)', fn: function(t) { return t.duration; } },
+    { name: 'offsetX', fn: function(t) { return t.offsetX; } },
+    { name: 'offsetY', fn: function(t) { return t.offsetY; } }
+  ];
+
+  html += '<table style="width:100%;font-size:.7em;border-collapse:collapse">';
+  html += '<tr style="color:#888;border-bottom:1px solid #333">';
+  html += '<th style="text-align:left;padding:4px">Property</th>';
+  html += '<th style="text-align:center;padding:4px">Finger A (avg)</th>';
+  html += '<th style="text-align:center;padding:4px">Finger A (std)</th>';
+  html += '<th style="text-align:center;padding:4px">Finger B (avg)</th>';
+  html += '<th style="text-align:center;padding:4px">Finger B (std)</th>';
+  html += '<th style="text-align:center;padding:4px">Diff%</th>';
+  html += '</tr>';
+
+  for (var p = 0; p < props.length; p++) {
+    var prop = props[p];
+    var avgA = avg(a, prop.fn);
+    var avgB = avg(b, prop.fn);
+    // Std dev
+    var sumSqA = 0, sumSqB = 0;
+    for (var i = 0; i < a.length; i++) { var d = prop.fn(a[i]) - avgA; sumSqA += d*d; }
+    for (var i = 0; i < b.length; i++) { var d = prop.fn(b[i]) - avgB; sumSqB += d*d; }
+    var stdA = Math.sqrt(sumSqA / a.length);
+    var stdB = Math.sqrt(sumSqB / b.length);
+    var diffPct = avgA !== 0 ? Math.round(Math.abs(avgB - avgA) / Math.abs(avgA) * 100) : (avgB !== 0 ? 999 : 0);
+    var diffColor = diffPct > 20 ? '#0f0' : (diffPct > 5 ? '#ff0' : '#f44');
+
+    html += '<tr style="border-bottom:1px solid #1a1a2a">';
+    html += '<td style="padding:4px;color:#888">' + prop.name + '</td>';
+    html += '<td style="text-align:center;padding:4px;color:#00e5ff">' + avgA.toFixed(2) + '</td>';
+    html += '<td style="text-align:center;padding:4px;color:#666">' + stdA.toFixed(2) + '</td>';
+    html += '<td style="text-align:center;padding:4px;color:#ffc107">' + avgB.toFixed(2) + '</td>';
+    html += '<td style="text-align:center;padding:4px;color:#666">' + stdB.toFixed(2) + '</td>';
+    html += '<td style="text-align:center;padding:4px;color:' + diffColor + ';font-weight:700">' + diffPct + '%</td>';
+    html += '</tr>';
+  }
+  html += '</table>';
+
+  // Show raw per-tap data — PointerEvent
+  html += '<div style="color:#a855f7;font-weight:700;font-size:.75em;margin:15px 0 4px">Per-Tap: PointerEvent</div>';
+  html += '<table style="width:100%;font-size:.6em;border-collapse:collapse">';
+  html += '<tr style="color:#888;border-bottom:1px solid #333">';
+  html += '<th style="padding:3px">#</th><th style="padding:3px">Grp</th>';
+  html += '<th style="padding:3px">W</th><th style="padding:3px">H</th>';
+  html += '<th style="padding:3px">Asp</th><th style="padding:3px">Pres</th>';
+  html += '<th style="padding:3px">Twist</th><th style="padding:3px">TiltX</th>';
+  html += '<th style="padding:3px">TiltY</th><th style="padding:3px">Dur</th>';
+  html += '</tr>';
+  for (var g = 0; g < 2; g++) {
+    var grp = g === 0 ? a : b;
+    var gName = g === 0 ? 'A' : 'B';
+    var gColor = g === 0 ? '#00e5ff' : '#ffc107';
+    for (var i = 0; i < grp.length; i++) {
+      var t = grp[i];
+      var asp = t.pe_height > 0 ? (t.pe_width / t.pe_height).toFixed(3) : '—';
+      html += '<tr style="border-bottom:1px solid #111">';
+      html += '<td style="padding:2px;text-align:center">' + (i+1) + '</td>';
+      html += '<td style="padding:2px;text-align:center;color:' + gColor + '">' + gName + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + t.pe_width.toFixed(1) + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + t.pe_height.toFixed(1) + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + asp + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + t.pe_pressure.toFixed(3) + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + t.pe_twist + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + t.pe_tiltX + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + t.pe_tiltY + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + t.duration.toFixed(0) + 'ms</td>';
+      html += '</tr>';
+    }
+  }
+  html += '</table>';
+
+  // Show raw per-tap data — TouchEvent
+  html += '<div style="color:#f97316;font-weight:700;font-size:.75em;margin:15px 0 4px">Per-Tap: TouchEvent</div>';
+  html += '<table style="width:100%;font-size:.6em;border-collapse:collapse">';
+  html += '<tr style="color:#888;border-bottom:1px solid #333">';
+  html += '<th style="padding:3px">#</th><th style="padding:3px">Grp</th>';
+  html += '<th style="padding:3px">rX</th><th style="padding:3px">rY</th>';
+  html += '<th style="padding:3px">Asp</th><th style="padding:3px">RotAngle</th>';
+  html += '<th style="padding:3px">Force</th>';
+  html += '<th style="padding:3px">Up rX</th><th style="padding:3px">Up rY</th>';
+  html += '<th style="padding:3px">Up Rot</th><th style="padding:3px">Up Force</th>';
+  html += '</tr>';
+  for (var g = 0; g < 2; g++) {
+    var grp = g === 0 ? a : b;
+    var gName = g === 0 ? 'A' : 'B';
+    var gColor = g === 0 ? '#00e5ff' : '#ffc107';
+    for (var i = 0; i < grp.length; i++) {
+      var t = grp[i];
+      var teAsp = t.te_radiusY > 0 ? (t.te_radiusX / t.te_radiusY).toFixed(3) : '—';
+      html += '<tr style="border-bottom:1px solid #111">';
+      html += '<td style="padding:2px;text-align:center">' + (i+1) + '</td>';
+      html += '<td style="padding:2px;text-align:center;color:' + gColor + '">' + gName + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + (t.te_radiusX >= 0 ? t.te_radiusX.toFixed(1) : 'N/A') + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + (t.te_radiusY >= 0 ? t.te_radiusY.toFixed(1) : 'N/A') + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + teAsp + '</td>';
+      html += '<td style="padding:2px;text-align:center;color:#f97316;font-weight:700">' + (t.te_rotationAngle >= 0 ? t.te_rotationAngle.toFixed(1) : 'N/A') + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + (t.te_force >= 0 ? t.te_force.toFixed(3) : 'N/A') + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + (t.touchUpRadiusX ? t.touchUpRadiusX.toFixed(1) : '—') + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + (t.touchUpRadiusY ? t.touchUpRadiusY.toFixed(1) : '—') + '</td>';
+      html += '<td style="padding:2px;text-align:center;color:#f97316">' + (t.touchUpRotationAngle ? t.touchUpRotationAngle.toFixed(1) : '—') + '</td>';
+      html += '<td style="padding:2px;text-align:center">' + (t.touchUpForce ? t.touchUpForce.toFixed(3) : '—') + '</td>';
+      html += '</tr>';
+    }
+  }
+  html += '</table>';
+
+  box.innerHTML = html;
+}
+
+function renderPinLoginResult(data) {
+  var box = document.getElementById('pin-result-box');
+  box.style.display = 'block';
+  var pct = Math.round(data.matchRate * 100);
+  var color = data.passed ? '#0f0' : '#f44';
+  var label = data.passed ? 'LOGIN PASS' : 'LOGIN FAIL';
+
+  var html = '';
+  // Header
+  html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
+  html += '<div style="font-size:1.8em;font-weight:700;color:' + color + '">' + pct + '%</div>';
+  html += '<div><div style="color:' + color + ';font-weight:700;font-size:.9em">' + (data.passed ? '\u2705 ' : '\u274c ') + label + '</div>';
+  html += '<div style="color:#888;font-size:.65em">Bin match: ' + data.matchCount + '/' + data.totalCompared + ' | Threshold: ' + Math.round(PIN_LOGIN_THRESHOLD * 100) + '% | 1-entry login</div></div>';
+  html += '</div>';
+
+  // PIN digit verification
+  var pinColor = data.pinMatch ? '#0f0' : '#f44';
+  var pinIcon = data.pinMatch ? '\u2705' : '\u274c';
+  html += '<div style="font-size:.75em;margin-bottom:6px">PIN digits: <span style="color:' + pinColor + ';font-weight:700">' + pinIcon + (data.pinMatch ? ' CORRECT' : ' WRONG (entered: ' + data.loginPin + ')') + '</span></div>';
+
+  // Stored hash
+  html += '<div style="font-size:.7em;color:#888;margin-bottom:10px">Reg hash: <span style="color:#00e5ff;font-family:monospace">' + data.storedHash.substring(0, 16) + '...</span></div>';
+
+  // Per-feature comparison table
+  html += '<div style="color:#a855f7;font-weight:700;font-size:.75em;margin:10px 0 4px">PIN Login Bin Comparison</div>';
+  html += '<table style="width:100%;font-size:.65em;border-collapse:collapse">';
+  html += '<tr style="color:#888;border-bottom:1px solid #333">';
+  html += '<th style="text-align:left;padding:3px">Feature</th>';
+  html += '<th style="text-align:center;padding:3px">Reg bin</th>';
+  html += '<th style="text-align:center;padding:3px">Login val</th>';
+  html += '<th style="text-align:center;padding:3px">Login bin</th>';
+  html += '<th style="text-align:center;padding:3px">Match</th>';
+  html += '</tr>';
+
+  for (var i = 0; i < data.details.length; i++) {
+    var d = data.details[i];
+    var isAngle = d.id.indexOf('pAng') === 0;
+    var valStr = d.rawVal !== null ? (isAngle ? d.rawVal.toFixed(0) : d.rawVal.toFixed(3)) : '-';
+    html += '<tr style="border-bottom:1px solid #1a1a2a">';
+    html += '<td style="color:#00e5ff;padding:3px">' + d.id + '</td>';
+    html += '<td style="text-align:center;padding:3px;color:#888">' + d.refBin + '</td>';
+    html += '<td style="text-align:center;padding:3px;color:#888">' + valStr + '</td>';
+    html += '<td style="text-align:center;padding:3px;color:#ffc107">' + (d.loginBin !== null ? d.loginBin : '-') + '</td>';
+    html += '<td style="text-align:center;padding:3px">' + (d.match ? '\u2705' : '\u274c') + '</td>';
+    html += '</tr>';
+  }
+  html += '</table>';
+
+  // Timing stats
+  var fp = data.fingerprint;
+  html += '<div style="margin-top:6px;font-size:.6em;color:#666">';
+  html += 'Duration: ' + fp.timing.durationMean.toFixed(0) + 'ms avg | ';
+  html += 'Interval: ' + fp.timing.intervalMean.toFixed(0) + 'ms avg | ';
+  html += 'Total: ' + fp.timing.totalDuration.toFixed(0) + 'ms';
+  html += '</div>';
+
+  box.innerHTML = html;
+}
+
+function renderPinResult(data) {
+  var box = document.getElementById('pin-result-box');
+  box.style.display = 'block';
+  var nRounds = data.hashes.length;
+  var nFeatures = data.featureSets[0].length;
+  var isMedian = data.isMedian || false;
+
+  // Build per-dimension details from featureSets
+  var matchCount = 0, totalCompared = 0, deadCount = 0, excludedCount = 0;
+  var dimDetails = [];
+  for (var i = 0; i < nFeatures; i++) {
+    var id = data.featureSets[0][i].id;
+    var binWidth = data.featureSets[0][i].binWidth;
+    var inWhitelist = !PIN_WHITELIST || PIN_WHITELIST.indexOf(id) >= 0;
+    var rawValues = [], bins = [];
+    for (var r = 0; r < nRounds; r++) {
+      var f = data.featureSets[r][i];
+      rawValues.push(f.value);
+      bins.push(pinQuantize(f.value, f.binWidth));
+    }
+
+    // Dead detection
+    var allSame = true;
+    for (var r = 1; r < nRounds; r++) { if (rawValues[r] !== rawValues[0]) allSame = false; }
+    var isDead = allSame && (rawValues[0] === 0 || Math.abs(rawValues[0]) < 0.001);
+
+    // Bin match
+    var binMatch = true;
+    for (var r = 1; r < nRounds; r++) { if (bins[r] !== bins[0]) binMatch = false; }
+
+    if (!inWhitelist) excludedCount++;
+    else if (isDead) deadCount++;
+    else { totalCompared++; if (binMatch) matchCount++; }
+
+    dimDetails.push({ id: id, rawValues: rawValues, bins: bins, binWidth: binWidth, isDead: isDead, binMatch: binMatch, inWhitelist: inWhitelist });
+  }
+
+  var matchRate = totalCompared > 0 ? Math.round(matchCount / totalCompared * 100) : 0;
+  var allHashesSame = true;
+  for (var r = 1; r < nRounds; r++) { if (data.hashes[r].hash !== data.hashes[0].hash) allHashesSame = false; }
+
+  var simColor = allHashesSame ? '#0f0' : matchRate >= 80 ? '#ffc107' : '#f44';
+  var simLabel = allHashesSame ? 'ALL IDENTICAL' : matchRate >= 80 ? 'PARTIAL MATCH' : 'UNSTABLE';
+
+  var html = '';
+  // Header
+  html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
+  if (allHashesSame) {
+    html += '<div style="font-size:1.4em;color:#0f0">\u2705 ' + simLabel + '</div>';
+  } else {
+    html += '<div style="font-size:1.8em;font-weight:700;color:' + simColor + '">' + matchRate + '%</div>';
+    html += '<div><div style="color:' + simColor + ';font-weight:700;font-size:.9em">' + simLabel + '</div>';
+    var modeLabel = isMedian ? ' | 2\u00d73 median' : ' | ' + nRounds + ' rounds';
+    html += '<div style="color:#888;font-size:.65em">Bin match: ' + matchCount + '/' + totalCompared + modeLabel + ' | SHA-256</div></div>';
+  }
+  html += '</div>';
+
+  // Hash rows
+  var rowLabel = isMedian ? 'Group' : 'Round';
+  html += '<table style="width:100%;font-size:.7em;border-collapse:collapse;margin-bottom:10px">';
+  html += '<tr style="color:#888"><th style="text-align:left;padding:3px">' + rowLabel + '</th><th style="text-align:left;padding:3px">PIN Behavior Hash (SHA-256)</th>';
+  html += '<th style="text-align:center;padding:3px">Match</th></tr>';
+  for (var r = 0; r < nRounds; r++) {
+    var hashMatch = r === 0 || data.hashes[r].hash === data.hashes[0].hash;
+    var rLabel = isMedian ? 'G' + String.fromCharCode(65 + r) : 'R' + (r + 1);
+    html += '<tr><td style="color:#a855f7;padding:3px">' + rLabel + '</td>';
+    html += '<td style="color:#00e5ff;padding:3px;font-family:monospace">' + data.hashes[r].hash.substring(0, 16) + '...</td>';
+    html += '<td style="text-align:center;padding:3px">' + (r === 0 ? '<span style="color:#888">REF</span>' : (hashMatch ? '\u2705' : '\u274c')) + '</td>';
+    html += '</tr>';
+  }
+  html += '</table>';
+
+  // Per-dimension bin stability table
+  var tableTitle = isMedian ? 'Per-Dimension Median Bin Stability (2\u00d73 median)' : 'Per-Dimension Bin Stability (' + nRounds + ' rounds)';
+  html += '<div style="color:#a855f7;font-weight:700;font-size:.75em;margin:10px 0 4px">' + tableTitle + '</div>';
+  html += '<table style="width:100%;font-size:.65em;border-collapse:collapse">';
+  html += '<tr style="color:#888;border-bottom:1px solid #333">';
+  html += '<th style="text-align:left;padding:3px">Feature</th>';
+  for (var r = 0; r < nRounds; r++) {
+    var colLabel = isMedian ? String.fromCharCode(65 + r) : 'R' + (r + 1);
+    html += '<th style="text-align:center;padding:3px">' + colLabel + ' val</th><th style="text-align:center;padding:3px">' + colLabel + ' bin</th>';
+  }
+  html += '<th style="text-align:center;padding:3px">BW</th>';
+  html += '<th style="text-align:center;padding:3px">Match</th>';
+  html += '</tr>';
+
+  var stableCount = 0;
+  for (var i = 0; i < dimDetails.length; i++) {
+    var d = dimDetails[i];
+    var isExcluded = !d.inWhitelist;
+    var isDimmed = d.isDead || isExcluded;
+    var rowBg = isDimmed ? 'rgba(50,50,50,0.15)' : '';
+    var nameCol = isDimmed ? '#444' : '#00e5ff';
+    if (d.inWhitelist && !d.isDead && d.binMatch) stableCount++;
+
+    html += '<tr style="border-bottom:1px solid #1a1a2a;background:' + rowBg + '">';
+    html += '<td style="color:' + nameCol + ';padding:3px;white-space:nowrap">' + d.id + (isExcluded ? ' \u2717' : '') + '</td>';
+    for (var r = 0; r < nRounds; r++) {
+      var vCol = isDimmed ? '#444' : '#888';
+      var bCol = isDimmed ? '#444' : '#ffc107';
+      var isAngle = d.id.indexOf('pAng') === 0;
+      var valStr = isAngle ? d.rawValues[r].toFixed(0) : d.rawValues[r].toFixed(3);
+      html += '<td style="text-align:center;padding:3px;color:' + vCol + '">' + valStr + '</td>';
+      html += '<td style="text-align:center;padding:3px;color:' + bCol + '">' + d.bins[r] + '</td>';
+    }
+    html += '<td style="text-align:center;padding:3px;color:#666">' + d.binWidth + '</td>';
+    var matchIcon = isExcluded ? '<span style="color:#444">\u2014</span>' : d.isDead ? '\uD83D\uDEAB' : d.binMatch ? '\u2705' : '\u274c';
+    html += '<td style="text-align:center;padding:3px">' + matchIcon + '</td>';
+    html += '</tr>';
+  }
+  html += '</table>';
+
+  // Summary
+  var whitelistCount = PIN_WHITELIST ? PIN_WHITELIST.length : nFeatures;
+  html += '<div style="margin-top:6px;font-size:.65em;color:#888">';
+  html += 'Whitelist: <span style="color:#00e5ff">' + whitelistCount + '</span>/' + nFeatures;
+  html += ' | Stable: <span style="color:#0f0">' + stableCount + '</span>/' + totalCompared;
+  html += ' | Unstable: <span style="color:#f44">' + (totalCompared - stableCount) + '</span>';
+  html += ' | Excluded: <span style="color:#444">' + excludedCount + '</span>';
+  html += ' | 區分力: 5^' + whitelistCount + ' \u2248 ' + Math.pow(5, whitelistCount).toExponential(1);
+  html += '</div>';
+
+  // Raw timing stats from calcPinFingerprint
+  var fp = data.fingerprints[nRounds - 1];
+  html += '<div style="margin-top:6px;font-size:.6em;color:#666">';
+  html += 'Duration: ' + fp.timing.durationMean.toFixed(0) + 'ms avg | ';
+  html += 'Interval: ' + fp.timing.intervalMean.toFixed(0) + 'ms avg | ';
+  html += 'Total: ' + fp.timing.totalDuration.toFixed(0) + 'ms | ';
+  html += 'Errors: ' + fp.errorPattern.deleteCount;
+  if (!fp.touchArea.hasRealTouchArea) html += ' | <span style="color:#ffc107">No touch data (mouse)</span>';
+  html += '</div>';
+
+  // Hash input (debug)
+  html += '<div style="margin-top:6px;font-size:.55em;color:#444;word-break:break-all">Hash input: ' + data.hashes[0].hashInput + '</div>';
+
+  box.innerHTML = html;
+}
+
+// ========================================
+// SWIPE GESTURE TEST — Registration Hash + Login Match
+// ========================================
+var swipeOverlay = null;
+var swipeGestureData = { A: [], B: [] };
+var swipeGroup = null;
+var swipeCount = 0;
+var SWIPE_MAX = 5;
+var SWIPE_REG_COUNT = 2;
+var swipeCurrentTrail = [];
+var swipeTouching = false;
+var swipeCtx = null;
+var swipeZoneEl = null;
+var swipeZoneHeight = 400; // will be measured
+var swipeZoneWidth = 300;
+
+// --- Swipe Registration State ---
+var swipeRegData = [];        // registration swipe trails
+var swipeRegTemplate = null;  // { features:{}, bins:{}, hash:'' }
+var swipeMode = null;         // 'reg', 'login', 'A', 'B'
+var swipeModeMax = 2;
+
+// --- Swipe Hash Config ---
+// === Swipe Hash: Velocity pHash (DCT) + midAngle + straightness ===
+// Velocity curve → resample 16 equal-distance points → DCT → low-freq bits
+var SWIPE_VPHASH_SIZE = 6;   // take first 6 DCT coefficients (skip DC) → 5 bits
+var SWIPE_RESAMPLE_N = 16;   // resample velocity to 16 equal-distance points
+
+// Additional absolute bins (shape features)
+var SWIPE_BIN_FEATURES = [
+  { key: 'straightness', bw: 0.02, label: 'straight (直度)' },
+  { key: 'midAngle',     bw: 15,   label: 'midAngle (中段角)' },
+  { key: 'curveSide',    bw: 1,    label: 'curveSide (彎向)' }
+];
+
+// No more pairwise comparisons — replaced by velocity pHash bits
+
+function doSwipeTest() {
+  if (!document.getElementById('swipe-overlay')) {
+    var ov = document.createElement('div');
+    ov.id = 'swipe-overlay';
+    ov.innerHTML = '<div id="swipe-header">Swipe Up Gesture — Hash Test</div>' +
+      '<div id="swipe-info">從底部往上滑 — 像 iPhone 解鎖</div>' +
+      '<div id="swipe-zone"><canvas id="swipe-gesture-canvas"></canvas>' +
+      '<div class="swipe-hint-text">⬆ 往上滑</div><div class="swipe-bottom-bar"></div></div>' +
+      '<div id="swipe-btns">' +
+      '<button onclick="startSwipeReg()" style="background:#4caf50;color:#fff">Register (2)</button>' +
+      '<button onclick="startSwipeLogin()" style="background:#ffc107;color:#000">Login (1)</button>' +
+      '<span style="color:#333;margin:0 4px">|</span>' +
+      '<button onclick="startSwipeCapture(\'A\')" style="background:#00e5ff;color:#000">A (5)</button>' +
+      '<button onclick="startSwipeCapture(\'B\')" style="background:#ff9800;color:#000">B (5)</button>' +
+      '<button onclick="compareSwipeGesture()">Compare</button>' +
+      '<button onclick="clearSwipeGesture()">Clear</button>' +
+      '<button onclick="closeSwipeTest()" style="background:#f44;color:#fff">Close</button>' +
+      '</div>' +
+      '<canvas id="swipe-vel-canvas"></canvas>' +
+      '<div id="swipe-result-box"></div>';
+    document.body.appendChild(ov);
+
+    swipeZoneEl = document.getElementById('swipe-zone');
+    var canvas = document.getElementById('swipe-gesture-canvas');
+
+    swipeZoneEl.addEventListener('touchstart', swipeTouchStart, { passive: false });
+    swipeZoneEl.addEventListener('touchmove', swipeTouchMove, { passive: false });
+    swipeZoneEl.addEventListener('touchend', swipeTouchEnd, { passive: false });
+  }
+  document.getElementById('swipe-overlay').style.display = 'flex';
+  initSwipeGestureCanvas();
+}
+
+function closeSwipeTest() {
+  document.getElementById('swipe-overlay').style.display = 'none';
+}
+
+function initSwipeGestureCanvas() {
+  var zone = document.getElementById('swipe-zone');
+  var canvas = document.getElementById('swipe-gesture-canvas');
+  swipeZoneHeight = zone.clientHeight;
+  swipeZoneWidth = zone.clientWidth;
+  canvas.width = zone.clientWidth * 2;
+  canvas.height = zone.clientHeight * 2;
+  canvas.style.width = zone.clientWidth + 'px';
+  canvas.style.height = zone.clientHeight + 'px';
+  swipeCtx = canvas.getContext('2d');
+  // Show zone size for debugging
+  document.getElementById('swipe-header').textContent =
+    'Swipe Up Gesture — Hash Test (' + swipeZoneWidth + '×' + swipeZoneHeight + ')';
+}
+
+// === Registration: 2 swipes → median features → quantize → SHA-256 hash ===
+function startSwipeReg() {
+  swipeMode = 'reg';
+  swipeModeMax = SWIPE_REG_COUNT;
+  swipeRegData = [];
+  swipeCount = 0;
+  initSwipeGestureCanvas();
+  swipeCtx.clearRect(0, 0, swipeCtx.canvas.width, swipeCtx.canvas.height);
+  document.getElementById('swipe-info').textContent = 'Register: 往上滑 0/' + SWIPE_REG_COUNT;
+  document.getElementById('swipe-result-box').innerHTML = '';
+}
+
+// === Login: 1 swipe → extract features → compare with stored template ===
+function startSwipeLogin() {
+  if (!swipeRegTemplate) {
+    document.getElementById('swipe-result-box').innerHTML =
+      '<div style="color:#f44;font-weight:700">No registration template — Register first!</div>';
+    return;
+  }
+  swipeMode = 'login';
+  swipeModeMax = 1;
+  swipeCount = 0;
+  swipeRegData = [];
+  initSwipeGestureCanvas();
+  swipeCtx.clearRect(0, 0, swipeCtx.canvas.width, swipeCtx.canvas.height);
+  document.getElementById('swipe-info').textContent = 'Login: 往上滑 1 次';
+}
+
+function startSwipeCapture(group) {
+  swipeMode = group;
+  swipeModeMax = SWIPE_MAX;
+  swipeGroup = group;
+  swipeGestureData[group] = [];
+  swipeCount = 0;
+  initSwipeGestureCanvas();
+  swipeCtx.clearRect(0, 0, swipeCtx.canvas.width, swipeCtx.canvas.height);
+  document.getElementById('swipe-info').textContent = 'Finger ' + group + ': 從底部往上滑 0/' + SWIPE_MAX;
+}
+
+function swipeTouchStart(e) {
+  if (!swipeMode) return;
+  e.preventDefault();
+  swipeTouching = true;
+  swipeCurrentTrail = [];
+  addSwipeGesturePoint(e.touches[0]);
+}
+
+function swipeTouchMove(e) {
+  if (!swipeMode || !swipeTouching) return;
+  e.preventDefault();
+  addSwipeGesturePoint(e.touches[0]);
+  drawSwipeGestureTrails();
+}
+
+function swipeTouchEnd(e) {
+  if (!swipeMode || !swipeTouching) return;
+  e.preventDefault();
+  swipeTouching = false;
+  if (swipeCurrentTrail.length < 5) return;
+  var dy = swipeCurrentTrail[swipeCurrentTrail.length-1].y - swipeCurrentTrail[0].y;
+  if (dy > -60) {
+    document.getElementById('swipe-info').textContent =
+      (swipeMode === 'reg' ? 'Register' : swipeMode === 'login' ? 'Login' : 'Finger ' + swipeMode) +
+      ': 要往上滑！ ' + swipeCount + '/' + swipeModeMax;
+    return;
+  }
+  swipeCount++;
+
+  if (swipeMode === 'reg' || swipeMode === 'login') {
+    swipeRegData.push(swipeCurrentTrail.slice());
+    if (swipeCount >= swipeModeMax) {
+      if (swipeMode === 'reg') {
+        finishSwipeReg();
+      } else {
+        finishSwipeLogin();
+      }
+      swipeMode = null;
+    } else {
+      document.getElementById('swipe-info').textContent =
+        (swipeMode === 'reg' ? 'Register' : 'Login') + ': ' + swipeCount + '/' + swipeModeMax;
+    }
+  } else {
+    // A/B comparison mode
+    swipeGestureData[swipeMode].push(swipeCurrentTrail.slice());
+    if (swipeCount >= swipeModeMax) {
+      swipeMode = null;
+      swipeGroup = null;
+      document.getElementById('swipe-info').textContent =
+        'A: ' + swipeGestureData.A.length + ', B: ' + swipeGestureData.B.length + ' swipes. Ready.';
+    } else {
+      document.getElementById('swipe-info').textContent =
+        'Finger ' + swipeMode + ': ' + swipeCount + '/' + swipeModeMax;
+    }
   }
 }
 
-function drawDiffHeatmap(diff,cid){
-  var c=document.getElementById(cid);if(!c)return;
-  c.width=diff.width;c.height=diff.height;
-  var ctx=c.getContext('2d'),id=ctx.createImageData(diff.width,diff.height);
-  for(var i=0;i<diff.data.length;i++){
-    var v=diff.data[i];
-    // Heatmap: black=no diff, red=max diff
-    id.data[i*4]=v;id.data[i*4+1]=0;id.data[i*4+2]=0;id.data[i*4+3]=255;
-  }
-  ctx.putImageData(id,0,0);
+function addSwipeGesturePoint(touch) {
+  var rect = document.getElementById('swipe-zone').getBoundingClientRect();
+  swipeCurrentTrail.push({ x: touch.clientX - rect.left, y: touch.clientY - rect.top, t: performance.now() });
 }
+
+function drawSwipeGestureTrails() {
+  swipeCtx.clearRect(0, 0, swipeCtx.canvas.width, swipeCtx.canvas.height);
+  ['A','B'].forEach(function(g) {
+    swipeGestureData[g].forEach(function(trail) { drawSwipeGesturePath(trail, g, 0.4); });
+  });
+  swipeRegData.forEach(function(trail) { drawSwipeGesturePath(trail, 'reg', 0.5); });
+  if (swipeCurrentTrail.length > 1) drawSwipeGesturePath(swipeCurrentTrail, swipeMode || 'reg', 0.8);
+}
+
+function drawSwipeGesturePath(pts, group, alpha) {
+  if (pts.length < 2) return;
+  var colors = { A: '0,229,255', B: '255,152,0', reg: '76,175,80', login: '255,193,7' };
+  var col = colors[group] || '200,200,200';
+  swipeCtx.strokeStyle = 'rgba(' + col + ',' + alpha + ')';
+  swipeCtx.lineWidth = 3;
+  swipeCtx.lineCap = 'round';
+  swipeCtx.beginPath();
+  swipeCtx.moveTo(pts[0].x * 2, pts[0].y * 2);
+  for (var i = 1; i < pts.length; i++) swipeCtx.lineTo(pts[i].x * 2, pts[i].y * 2);
+  swipeCtx.stroke();
+  swipeCtx.fillStyle = 'rgba(' + col + ',' + Math.min(alpha+0.3,1) + ')';
+  swipeCtx.beginPath();
+  swipeCtx.arc(pts[0].x * 2, pts[0].y * 2, 5, 0, Math.PI*2);
+  swipeCtx.fill();
+}
+
+// ========================================
+// FEATURE EXTRACTION (raw + normalized)
+// ========================================
+function extractSwipeGestureFeatures(pts) {
+  var n = pts.length, t0 = pts[0].t, dur = pts[n-1].t - t0;
+  var pathLen = 0, speeds = [], accels = [];
+  for (var i = 1; i < n; i++) {
+    var dx = pts[i].x - pts[i-1].x, dy = pts[i].y - pts[i-1].y, dt = pts[i].t - pts[i-1].t;
+    var dist = Math.sqrt(dx*dx+dy*dy);
+    pathLen += dist;
+    var spd = dt > 0 ? dist / dt : 0;
+    speeds.push(spd);
+    if (speeds.length >= 2) accels.push(dt > 0 ? (spd - speeds[speeds.length-2]) / dt : 0);
+  }
+  var maxSpd = Math.max.apply(null, speeds);
+  var maxSpdPos = speeds.indexOf(maxSpd) / (speeds.length || 1);
+  var directDist = Math.sqrt(Math.pow(pts[n-1].x-pts[0].x,2)+Math.pow(pts[n-1].y-pts[0].y,2));
+  var curv = 0;
+  if (n > 2) {
+    var la = Math.atan2(pts[n-1].y-pts[0].y, pts[n-1].x-pts[0].x);
+    for (var i = 1; i < n-1; i++) curv += Math.abs(Math.atan2(pts[i].y-pts[0].y, pts[i].x-pts[0].x) - la);
+    curv /= (n-2);
+  }
+  var half = Math.floor(speeds.length/2), earlySpd = 0, lateSpd = 0;
+  for (var i = 0; i < half; i++) earlySpd += speeds[i];
+  for (var i = half; i < speeds.length; i++) lateSpd += speeds[i];
+  earlySpd /= (half||1); lateSpd /= ((speeds.length-half)||1);
+
+  var avgSpd = pathLen / (dur || 1);
+  var s50 = speeds[Math.floor(speeds.length*0.50)] || 0;
+  var s75 = speeds[Math.floor(speeds.length*0.75)] || 0;
+
+  // === Mid-section angle: 20%~80% of path by distance (avoid start/end noise) ===
+  var cumDist = [0];
+  for (var i = 1; i < n; i++) {
+    var ddx = pts[i].x - pts[i-1].x, ddy = pts[i].y - pts[i-1].y;
+    cumDist.push(cumDist[i-1] + Math.sqrt(ddx*ddx + ddy*ddy));
+  }
+  var totalPathDist = cumDist[n-1] || 1;
+
+  // Find points at 20% and 80% of path distance
+  var pt20 = pts[0], pt80 = pts[n-1];
+  for (var i = 1; i < n; i++) {
+    if (cumDist[i] >= totalPathDist * 0.2) { pt20 = pts[i]; break; }
+  }
+  for (var i = n - 1; i >= 0; i--) {
+    if (cumDist[i] <= totalPathDist * 0.8) { pt80 = pts[i]; break; }
+  }
+  var midAngle = Math.atan2(pt80.x - pt20.x, -(pt80.y - pt20.y)) * 180 / Math.PI;
+
+  // === Curve side: midpoint deviation from straight line ===
+  var midIdx = Math.floor(n / 2);
+  var lineMidX = (pts[0].x + pts[n-1].x) / 2;
+  var curveSideN = directDist > 0 ? (pts[midIdx].x - lineMidX) / directDist : 0;
+  var curveSideD = Math.abs(curveSideN) < 0.05 ? 0 : (curveSideN > 0 ? 1 : -1);
+
+  // === Velocity pHash: resample speed to N equal-distance points, then DCT ===
+  var resampledSpeed = [];
+  var segSpeeds = speeds; // speeds[i] = speed of segment i→i+1
+  // Build cumulative distance for segments (midpoint-based)
+  var segCumDist = [0];
+  for (var i = 0; i < segSpeeds.length; i++) {
+    segCumDist.push(cumDist[i+1]); // end of segment i
+  }
+  // Resample: for each of SWIPE_RESAMPLE_N equal-distance points, interpolate speed
+  for (var ri = 0; ri < SWIPE_RESAMPLE_N; ri++) {
+    var targetDist = (ri + 0.5) / SWIPE_RESAMPLE_N * totalPathDist;
+    // Find which segment this falls in
+    var si = 0;
+    for (var j = 1; j < segCumDist.length; j++) {
+      if (segCumDist[j] >= targetDist) { si = j - 1; break; }
+      si = j - 1;
+    }
+    si = Math.min(si, segSpeeds.length - 1);
+    resampledSpeed.push(segSpeeds[si]);
+  }
+
+  // Normalize resampled speed to remove absolute magnitude (divide by mean)
+  var rsMean = 0;
+  for (var i = 0; i < resampledSpeed.length; i++) rsMean += resampledSpeed[i];
+  rsMean /= (resampledSpeed.length || 1);
+  if (rsMean > 0) {
+    for (var i = 0; i < resampledSpeed.length; i++) resampledSpeed[i] /= rsMean;
+  }
+
+  // 1D DCT on normalized speed profile
+  var S = resampledSpeed.length;
+  var velDct = [];
+  for (var k = 0; k < SWIPE_VPHASH_SIZE; k++) {
+    var sum = 0;
+    var ck = (k === 0) ? 1 / Math.sqrt(2) : 1;
+    for (var nn = 0; nn < S; nn++) {
+      sum += resampledSpeed[nn] * Math.cos(Math.PI * (2 * nn + 1) * k / (2 * S));
+    }
+    velDct.push((2 / S) * ck * sum);
+  }
+
+  // Skip DC (k=0), threshold remaining coefficients at median → binary bits
+  var velCoeffs = velDct.slice(1); // skip DC
+  var sortedCoeffs = velCoeffs.slice().sort(function(a, b) { return a - b; });
+  var velMedian = sortedCoeffs[Math.floor(sortedCoeffs.length / 2)];
+  var velHashBits = '';
+  for (var i = 0; i < velCoeffs.length; i++) {
+    velHashBits += velCoeffs[i] > velMedian ? '1' : '0';
+  }
+
+  return {
+    // Raw features (for display/comparison)
+    duration: dur, pathLength: pathLen, avgSpeed: avgSpd, maxSpeed: maxSpd, maxSpeedPos: maxSpdPos,
+    startX: pts[0].x, startY: pts[0].y, endX: pts[n-1].x, endY: pts[n-1].y,
+    xDrift: pts[n-1].x - pts[0].x, straightness: pathLen > 0 ? directDist/pathLen : 1, curvature: curv,
+    speedRatio: lateSpd > 0 ? earlySpd / lateSpd : 0,
+    s25: speeds[Math.floor(speeds.length*0.25)]||0, s50: s50, s75: s75, samples: n,
+
+    // Hash features
+    midAngle: midAngle,
+    curveSide: curveSideD,
+    velHashBits: velHashBits,      // velocity pHash bits string
+    velDct: velDct,                // raw DCT coefficients (for display)
+    resampledSpeed: resampledSpeed // normalized resampled speed (for display)
+  };
+}
+
+// ========================================
+// SWIPE HASH: absolute bins + pairwise comparisons → SHA-256
+// ========================================
+
+function computeSwipeMedianFeatures(trails) {
+  var feats = trails.map(extractSwipeGestureFeatures);
+  // Median for absolute bin features
+  var median = {};
+  for (var i = 0; i < SWIPE_BIN_FEATURES.length; i++) {
+    var k = SWIPE_BIN_FEATURES[i].key;
+    var vals = feats.map(function(f) { return f[k]; }).sort(function(a,b) { return a - b; });
+    median[k] = vals[Math.floor(vals.length / 2)];
+  }
+  // For velHashBits: take the bits from the median-index swipe (the "middle" swipe)
+  // With 2 swipes, pick the first one's bits (both should be similar if stable)
+  // Better: re-compute DCT from median of resampled speeds
+  var rsLen = feats[0].resampledSpeed.length;
+  var medianRS = [];
+  for (var ri = 0; ri < rsLen; ri++) {
+    var vals = feats.map(function(f) { return f.resampledSpeed[ri]; }).sort(function(a,b) { return a - b; });
+    medianRS.push(vals[Math.floor(vals.length / 2)]);
+  }
+  // Re-do DCT on median resampled speed
+  var S = medianRS.length;
+  var velDct = [];
+  for (var k = 0; k < SWIPE_VPHASH_SIZE; k++) {
+    var sum = 0;
+    var ck = (k === 0) ? 1 / Math.sqrt(2) : 1;
+    for (var nn = 0; nn < S; nn++) {
+      sum += medianRS[nn] * Math.cos(Math.PI * (2 * nn + 1) * k / (2 * S));
+    }
+    velDct.push((2 / S) * ck * sum);
+  }
+  var velCoeffs = velDct.slice(1);
+  var sorted = velCoeffs.slice().sort(function(a, b) { return a - b; });
+  var velMedian = sorted[Math.floor(sorted.length / 2)];
+  var velHashBits = '';
+  for (var i = 0; i < velCoeffs.length; i++) velHashBits += velCoeffs[i] > velMedian ? '1' : '0';
+
+  median._velHashBits = velHashBits;
+  median._velDct = velDct;
+  median._medianRS = medianRS;
+  return median;
+}
+
+function computeSwipeBins(medianFeatures) {
+  var bins = {};
+  for (var i = 0; i < SWIPE_BIN_FEATURES.length; i++) {
+    var cfg = SWIPE_BIN_FEATURES[i];
+    bins[cfg.key] = Math.round(medianFeatures[cfg.key] / cfg.bw);
+  }
+  return bins;
+}
+
+async function computeSwipeHash(bins, velBits) {
+  var parts = [];
+  for (var i = 0; i < SWIPE_BIN_FEATURES.length; i++) {
+    var k = SWIPE_BIN_FEATURES[i].key;
+    parts.push(k + ':' + bins[k]);
+  }
+  parts.push('vpHash:' + velBits);
+  var hashInput = parts.join('|');
+  var hash = await sha256hex(hashInput);
+  return { hash: hash, hashInput: hashInput };
+}
+
+// ========================================
+// REGISTRATION: 2 swipes → template + hash
+// ========================================
+async function finishSwipeReg() {
+  var median = computeSwipeMedianFeatures(swipeRegData);
+  var bins = computeSwipeBins(median);
+  var velBits = median._velHashBits;
+  var result = await computeSwipeHash(bins, velBits);
+
+  swipeRegTemplate = {
+    features: median,
+    bins: bins,
+    velBits: velBits,
+    hash: result.hash,
+    hashInput: result.hashInput,
+    trails: swipeRegData.slice()
+  };
+
+  // Display
+  var html = '<div style="color:#4caf50;font-weight:700;font-size:1.1em;margin-bottom:6px">Registration Complete</div>';
+  html += '<div style="color:#0f0;font-family:monospace;font-size:.75em;word-break:break-all;margin-bottom:8px">' +
+    'Swipe Hash: ' + result.hash + '</div>';
+  html += '<div style="color:#666;font-size:.55em;word-break:break-all;margin-bottom:8px">Input: ' + result.hashInput + '</div>';
+
+  // A: Absolute bins
+  html += '<div style="color:#4caf50;font-weight:700;margin:8px 0 4px;font-size:.85em">A. Shape Bins</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.85em">' +
+    '<tr><th style="text-align:left;color:#888">Feature</th><th style="color:#888">BW</th><th style="color:#4caf50">Value</th><th style="color:#4caf50">Bin</th></tr>';
+  for (var i = 0; i < SWIPE_BIN_FEATURES.length; i++) {
+    var cfg = SWIPE_BIN_FEATURES[i];
+    html += '<tr style="border-bottom:1px solid #1a1a2a"><td style="text-align:left;color:#aaa">' + cfg.label + '</td>' +
+      '<td style="color:#666;text-align:center">' + cfg.bw + '</td>' +
+      '<td style="color:#4caf50;text-align:center">' + median[cfg.key].toFixed(4) + '</td>' +
+      '<td style="color:#0f0;text-align:center;font-weight:700">' + bins[cfg.key] + '</td></tr>';
+  }
+  html += '</table>';
+
+  // B: Velocity pHash
+  html += '<div style="color:#00e5ff;font-weight:700;margin:8px 0 4px;font-size:.85em">B. Velocity pHash (DCT)</div>';
+  html += '<div style="color:#0f0;font-family:monospace;font-size:1.1em;letter-spacing:4px;margin-bottom:4px">' + velBits + '</div>';
+  html += '<div style="color:#666;font-size:.65em">DCT coefficients (skip DC): ';
+  for (var i = 1; i < median._velDct.length; i++) {
+    html += (i > 1 ? ', ' : '') + median._velDct[i].toFixed(3);
+  }
+  html += '</div>';
+
+  // Velocity curve visualization
+  html += '<div style="color:#888;font-size:.65em;margin-top:6px">Resampled speed (' + SWIPE_RESAMPLE_N + ' pts, normalized): ';
+  html += median._medianRS.map(function(v) { return v.toFixed(2); }).join(' ');
+  html += '</div>';
+
+  html += '<div style="color:#888;font-size:.65em;margin-top:6px">' + swipeRegData.length + ' swipes → ' +
+    SWIPE_BIN_FEATURES.length + ' bins + ' + velBits.length + ' vpHash bits = ' +
+    (SWIPE_BIN_FEATURES.length + velBits.length) + ' components → SHA-256</div>';
+
+  document.getElementById('swipe-result-box').innerHTML = html;
+  document.getElementById('swipe-info').textContent = 'Registered! Hash: ' + result.hash.substring(0, 16) + '...';
+}
+
+// ========================================
+// LOGIN: 1 swipe → compare bins → match rate
+// ========================================
+async function finishSwipeLogin() {
+  var loginFeat = extractSwipeGestureFeatures(swipeRegData[0]);
+
+  // A: Absolute bins
+  var loginBins = {};
+  for (var i = 0; i < SWIPE_BIN_FEATURES.length; i++) {
+    var cfg = SWIPE_BIN_FEATURES[i];
+    loginBins[cfg.key] = Math.round(loginFeat[cfg.key] / cfg.bw);
+  }
+
+  // B: Velocity pHash from login swipe
+  var loginVelBits = loginFeat.velHashBits;
+
+  var loginResult = await computeSwipeHash(loginBins, loginVelBits);
+
+  // Compare absolute bins
+  var binMatchCount = 0, binTotal = SWIPE_BIN_FEATURES.length;
+  var binRows = [];
+  for (var i = 0; i < SWIPE_BIN_FEATURES.length; i++) {
+    var cfg = SWIPE_BIN_FEATURES[i];
+    var k = cfg.key;
+    var refBin = swipeRegTemplate.bins[k];
+    var lBin = loginBins[k];
+    var isMatch = refBin === lBin;
+    if (isMatch) binMatchCount++;
+    binRows.push({
+      label: cfg.label, key: k, bw: cfg.bw,
+      refVal: swipeRegTemplate.features[k], refBin: refBin,
+      loginVal: loginFeat[k], loginBin: lBin,
+      match: isMatch
+    });
+  }
+
+  // Compare velocity pHash bits (hamming distance)
+  var regBits = swipeRegTemplate.velBits;
+  var vpBitMatch = 0, vpBitTotal = regBits.length;
+  var vpBitRows = [];
+  for (var i = 0; i < vpBitTotal; i++) {
+    var isMatch = regBits[i] === loginVelBits[i];
+    if (isMatch) vpBitMatch++;
+    vpBitRows.push({ idx: i, reg: regBits[i], login: loginVelBits[i], match: isMatch });
+  }
+
+  // Combined score
+  var totalMatch = binMatchCount + vpBitMatch;
+  var totalAll = binTotal + vpBitTotal;
+  var matchRate = totalMatch / totalAll;
+  var matchPct = Math.round(matchRate * 100);
+  var hashMatch = loginResult.hash === swipeRegTemplate.hash;
+  var passed = matchRate >= 0.75;
+
+  // Display
+  var bgCol = passed ? '#1a2a1a' : '#2a1a1a';
+  var html = '<div style="background:' + bgCol + ';border-radius:8px;padding:8px;margin-bottom:8px">';
+  html += '<div style="font-size:1.2em;font-weight:700;color:' + (passed ? '#4caf50' : '#f44') + '">' +
+    (passed ? 'LOGIN PASS' : 'LOGIN FAIL') + ' — ' + matchPct + '% (' + totalMatch + '/' + totalAll + ')</div>';
+  html += '<div style="color:#888;font-size:.8em">Bins: ' + binMatchCount + '/' + binTotal +
+    ' | vpHash: ' + vpBitMatch + '/' + vpBitTotal + '</div>';
+  html += '<div style="color:' + (hashMatch ? '#0f0' : '#f44') + ';font-size:.8em;margin-top:4px">' +
+    'Hash ' + (hashMatch ? 'EXACT MATCH' : 'DIFFERENT') + '</div>';
+  html += '<div style="color:#666;font-size:.65em;word-break:break-all;margin-top:4px">Login hash: ' + loginResult.hash + '</div>';
+  html += '</div>';
+
+  // A: Shape bins detail
+  html += '<div style="color:#4caf50;font-weight:700;margin:6px 0 3px;font-size:.8em">A. Shape Bins</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:.75em">' +
+    '<tr><th style="text-align:left;color:#888">Feature</th><th style="color:#888">BW</th>' +
+    '<th style="color:#4caf50">Reg</th><th style="color:#4caf50">Bin</th>' +
+    '<th style="color:#ffc107">Login</th><th style="color:#ffc107">Bin</th>' +
+    '<th>OK?</th></tr>';
+  for (var i = 0; i < binRows.length; i++) {
+    var d = binRows[i];
+    var mc = d.match ? '#0f0' : '#f44';
+    html += '<tr style="border-bottom:1px solid #1a1a2a">' +
+      '<td style="text-align:left;color:#aaa">' + d.label + '</td>' +
+      '<td style="color:#666;text-align:center">' + d.bw + '</td>' +
+      '<td style="color:#4caf50;text-align:center">' + d.refVal.toFixed(3) + '</td>' +
+      '<td style="color:#4caf50;text-align:center">' + d.refBin + '</td>' +
+      '<td style="color:#ffc107;text-align:center">' + d.loginVal.toFixed(3) + '</td>' +
+      '<td style="color:#ffc107;text-align:center">' + d.loginBin + '</td>' +
+      '<td style="color:' + mc + ';text-align:center;font-weight:700">' + (d.match ? 'OK' : 'X') + '</td></tr>';
+  }
+  html += '</table>';
+
+  // B: Velocity pHash bits detail
+  html += '<div style="color:#00e5ff;font-weight:700;margin:6px 0 3px;font-size:.8em">B. Velocity pHash</div>';
+  html += '<div style="font-family:monospace;font-size:1em;margin-bottom:4px">';
+  html += '<span style="color:#888">Reg:  </span>';
+  for (var i = 0; i < vpBitRows.length; i++) {
+    var mc = vpBitRows[i].match ? '#0f0' : '#f44';
+    html += '<span style="color:' + mc + '">' + vpBitRows[i].reg + '</span>';
+  }
+  html += '<br><span style="color:#888">Login:</span>';
+  for (var i = 0; i < vpBitRows.length; i++) {
+    var mc = vpBitRows[i].match ? '#0f0' : '#f44';
+    html += '<span style="color:' + mc + '">' + vpBitRows[i].login + '</span>';
+  }
+  html += '</div>';
+  html += '<div style="color:#888;font-size:.65em">Hamming distance: ' + (vpBitTotal - vpBitMatch) + '/' + vpBitTotal + '</div>';
+
+  document.getElementById('swipe-result-box').innerHTML = html;
+  document.getElementById('swipe-info').textContent = (passed ? 'Login PASS' : 'Login FAIL') +
+    ' — ' + matchPct + '% (' + totalMatch + '/' + totalAll + ')';
+}
+
+// ========================================
+// A/B COMPARISON (preserved from before)
+// ========================================
+function compareSwipeGesture() {
+  var a = swipeGestureData.A, b = swipeGestureData.B;
+  if (!a.length || !b.length) { alert('Need both A and B'); return; }
+  var fA = a.map(extractSwipeGestureFeatures), fB = b.map(extractSwipeGestureFeatures);
+  var keys = Object.keys(fA[0]);
+  var html = '<div style="color:#00e5ff;font-weight:700;margin-bottom:4px">Swipe Up: A vs B</div>';
+  html += '<div style="color:#888;margin-bottom:4px">A: ' + a.length + ', B: ' + b.length + ' swipes</div>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:1em"><tr><th style="text-align:left;color:#888">Feature</th><th style="color:#00e5ff">A avg</th><th>A std</th><th style="color:#ffc107">B avg</th><th>B std</th><th>Diff%</th><th>SNR</th></tr>';
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var av = fA.map(function(f){return f[k];}), bv = fB.map(function(f){return f[k];});
+    var aA = _avg(av), bA = _avg(bv), aS = _std(av), bS = _std(bv);
+    var diff = aA !== 0 ? Math.round(Math.abs(bA-aA)/Math.abs(aA)*100) : (bA !== 0 ? 999 : 0);
+    var noise = (aS+bS)/2, snr = noise > 0 ? (Math.abs(bA-aA)/noise).toFixed(1) : '—';
+    var dc = diff > 20 ? '#0f0' : (diff > 5 ? '#ffc107' : '#f44');
+    var sc = parseFloat(snr) > 2 ? '#0f0' : (parseFloat(snr) > 1 ? '#ffc107' : '#f44');
+    html += '<tr><td style="text-align:left;color:#888">' + k + '</td><td style="color:#00e5ff">' + aA.toFixed(2) + '</td><td style="color:#666">' + aS.toFixed(2) + '</td><td style="color:#ffc107">' + bA.toFixed(2) + '</td><td style="color:#666">' + bS.toFixed(2) + '</td><td style="color:' + dc + '">' + diff + '%</td><td style="color:' + sc + '">' + snr + '</td></tr>';
+  }
+  html += '</table>';
+  document.getElementById('swipe-result-box').innerHTML = html;
+
+  // Velocity profile chart
+  var vc = document.getElementById('swipe-vel-canvas');
+  vc.width = 600; vc.height = 240;
+  var vctx = vc.getContext('2d');
+  vctx.clearRect(0,0,600,240);
+  vctx.fillStyle = '#0a0a1a'; vctx.fillRect(0,0,600,240);
+  vctx.strokeStyle = '#333'; vctx.lineWidth = 1;
+  vctx.beginPath(); vctx.moveTo(30,10); vctx.lineTo(30,220); vctx.lineTo(590,220); vctx.stroke();
+  var allS = a.concat(b).map(function(s){return s.map(function(p,i){if(i===0)return 0;var dx=p.x-s[i-1].x,dy=p.y-s[i-1].y,dt=p.t-s[i-1].t;return dt>0?Math.sqrt(dx*dx+dy*dy)/dt:0;});});
+  var gMax = 0; allS.forEach(function(s){s.forEach(function(v){if(v>gMax)gMax=v;});});
+  [a,b].forEach(function(swipes,gi){
+    swipes.forEach(function(pts){
+      var col = gi===0?'rgba(0,229,255,0.5)':'rgba(255,152,0,0.5)';
+      vctx.strokeStyle=col; vctx.lineWidth=2; vctx.beginPath();
+      var t0=pts[0].t, tR=pts[pts.length-1].t-t0||1;
+      for(var i=1;i<pts.length;i++){
+        var dx=pts[i].x-pts[i-1].x,dy=pts[i].y-pts[i-1].y,dt=pts[i].t-pts[i-1].t;
+        var spd=dt>0?Math.sqrt(dx*dx+dy*dy)/dt:0;
+        var px=30+((pts[i].t-t0)/tR)*560, py=220-(spd/(gMax||1))*200;
+        if(i===1)vctx.moveTo(px,py);else vctx.lineTo(px,py);
+      }
+      vctx.stroke();
+    });
+  });
+  vctx.fillStyle='#00e5ff';vctx.font='10px sans-serif';vctx.fillText('— A',40,16);
+  vctx.fillStyle='#ff9800';vctx.fillText('— B',80,16);
+}
+
+function clearSwipeGesture() {
+  swipeGestureData = { A: [], B: [] };
+  swipeRegData = [];
+  swipeRegTemplate = null;
+  swipeMode = null; swipeCount = 0;
+  if (swipeCtx) swipeCtx.clearRect(0, 0, swipeCtx.canvas.width, swipeCtx.canvas.height);
+  document.getElementById('swipe-result-box').innerHTML = '';
+  document.getElementById('swipe-info').textContent = '從底部往上滑 — 像 iPhone 解鎖';
+}
+
+function _avg(a){if(!a.length)return 0;var s=0;for(var i=0;i<a.length;i++)s+=a[i];return s/a.length;}
+function _std(a){if(a.length<2)return 0;var m=_avg(a),s=0;for(var i=0;i<a.length;i++){var d=a[i]-m;s+=d*d;}return Math.sqrt(s/a.length);}
+
 </script>
 </body>
 </html>

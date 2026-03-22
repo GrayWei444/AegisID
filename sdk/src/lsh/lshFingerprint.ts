@@ -357,7 +357,7 @@ export function computePinLSHHash(fingerprint: PinBehaviorFingerprint): LSHHashR
 /**
  * Face 嵌入向量的 LSH 配置
  *
- * CNN MobileFaceNet 產生 512 維 embedding
+ * 注意：此配置原為 MobileFaceNet 512 維 CNN embedding 設計，待遷移至骨骼比率系統。
  * 使用 128-bit hash（比 PIN 的 64-bit 更大，因為維度更高）
  */
 export const FACE_LSH_CONFIG: LSHConfig = {

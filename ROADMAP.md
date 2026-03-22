@@ -14,7 +14,8 @@
 | **Phase 1** | 專案建置 + CNN 遷移 | 1-2 天 | ✅ 完成 | - |
 | **Phase 1.5** | 唯一臉部 ID 研究 | 持續 | 🔄 進行中 | Phase 1 |
 | **Phase 2** | CNN 跨鏡頭穩定性驗證 | 2-3 天 | ⏳ | Phase 1 |
-| **Phase 3** | PIN 行為指紋重新設計 | 3-5 天 | ⏳ | Phase 1 |
+| **Phase 2.5** | 滑動手勢辨識研究 | 持續 | 🔄 進行中 | Phase 1 |
+| **Phase 3** | 滑動手勢 + PIN 行為重新設計 | 3-5 天 | ⏳ | Phase 2.5 |
 | **Phase 4** | 固定尺寸 PIN 鍵盤 | 1-2 天 | ⏳ | Phase 3 |
 | **Phase 5** | LSH 系統升級 | 2-3 天 | ⏳ | Phase 2, 3 |
 | **Phase 6** | VPS 三表資料庫 | 2-3 天 | ⏳ | Phase 5 |
@@ -90,19 +91,22 @@
 - [x] SDK 模組建立 — `structuralId.ts` 正規化管線已實作
 - [x] 測試頁面 — https://aegisrd.com/face-id-test/
 - [x] 文件建立 — UNIQUE-FACE-ID.md, BONE-RATIO-SYSTEM.md, IMAGE-NORMALIZATION.md
+- [x] 3D 視頻掃描管線 — 連續錄影 + 自動截圖 + 多角度 3D 重建
+- [x] 偽彩深度可視化 — Jet colormap 3D 臉模型（正面/側面/俯視）
+- [x] Bin 邊界漂移研究 — floor() vs round() 量化，系統性邊界分析
+- [x] BIN_WIDTH 最佳化 — 0.10 → 0.15 → 0.25，round() 量化
+- [x] 穩定比率篩選 — 67 → 24 個穩定比率，3 輪 3D Multi-Test 24/24 全部一致 ✅
+- [x] v14 統一架構設計 — 一套骨骼比率系統服務註冊（3D hash）和登入（平面 bin match）
+- [x] 正面基準提取 — 3D 掃描時自動取最佳正面幀，存本機作登入基準
+- [x] Login Test 模式 — 平面刷臉 vs 正面基準 bin 比對
 
 ### 進行中
 
-- [ ] 67 比率 L1 穩定性測試（頭不動連拍）
-- [ ] 不穩定比率識別與淘汰
-- [ ] 轉頭穩定性測試（±10°, ±20°）
+- [ ] 3D vs 平面 match rate 驗證（目標 ≥80%）
 - [ ] 不同距離穩定性測試
 - [ ] 不同裝置穩定性測試
-- [ ] 最終穩定比率子集確定
-- [ ] bin width 最佳化
 - [ ] 區分力驗證（不同人測試）
-- [ ] 組合 hash 策略確定（pHash + 骨骼比率）
-- [ ] `structuralId.ts` 完整實作
+- [ ] `structuralId.ts` 完整實作（含 3D 重建 + 登入比對）
 
 ### 關鍵發現
 
@@ -110,8 +114,12 @@
 2. **全局 histEq 優於 CLAHE** — CLAHE 分區處理反而扭曲五官邊界
 3. **不需要 Gaussian blur** — SSIM 0.993 已經夠穩定，模糊反而丟資訊
 4. **深度路線不可行** — 單目深度推論不確定性太大，曲率場二階微分放大誤差
-5. **骨骼比率有潛力** — 83% 穩定，擴充後篩選可望提高
-6. **策略轉向：大量擴充後篩選** — 67 比率覆蓋所有面部區域，測試後保留穩定子集
+5. **骨骼比率有潛力** — 83% → 100% 穩定（BIN_WIDTH=0.25 + round()）
+6. **策略轉向：大量擴充後篩選** — 67 比率覆蓋所有面部區域，篩選出 24 個穩定子集
+7. **Bin 邊界是根本問題** — floor() 邊界在 0.x0，round() 移到 0.x5，加大 BIN_WIDTH 避開
+8. **BIN_WIDTH=0.25 + round() 是最優組合** — 邊界在 0.125/0.375/0.625/0.875，所有比率安全避開
+9. **統一系統可行** — 骨骼比率同時服務 3D 唯一 ID 和平面登入，不需要 CNN
+10. **Anti-spoof 仍然需要** — MiniFASNet 防偽保留（612KB），CNN 13MB 不再需要
 
 ### 相關文件
 
@@ -123,6 +131,46 @@
 | `docs/face-structure-id-research.md` | 研究過程完整記錄 |
 | `sdk/src/face/structuralId.ts` | SDK 模組 |
 | `tools/face-id-test.html` | 測試頁面 |
+
+---
+
+## Phase 2.5: 滑動手勢辨識研究 🔄 進行中
+
+**目標**: 驗證「往上滑解鎖」手勢作為行為辨識的第二層驗證
+
+**核心概念**: 臉部辨識 → 確認 → 往上滑解鎖 → 滑動行為驗證（如 iPhone Face ID 後的解鎖手勢）
+
+### 已完成
+
+- [x] 觸控感測器調查 — Samsung SM-F9560 MotionEvent 測試
+- [x] 觸控感測器結論 — pressure/orientation 無用，touchMajor/Minor 噪音太大
+- [x] Capacitor 原生 App — NativeTouchPlugin.java（MOVE 事件 + 歷史採樣）
+- [x] Swipe Up 手勢測試 — 路徑形狀 + 速度曲線 + 加速度特徵
+- [x] **同指穩定性驗證** — 7 個特徵 SNR < 1 ✅
+- [x] **不同指區分力驗證** — 7 個特徵 SNR > 2（最高 6.6）✅
+- [x] PIN + Swipe 聯合測試 — PIN 時序 + 滑動手勢組合
+
+### 進行中
+
+- [ ] 不同人區分力驗證（同手指、不同人）
+- [ ] 跨 session 穩定性驗證（隔天再測）
+- [ ] 特徵量化 → bin hash → 確定性 ID
+- [ ] 整合到 face-id-test.html（臉 + 滑動聯合測試）
+
+### 關鍵發現
+
+1. **觸控物理數據不可行** — Samsung 的 pressure=1.0, orientation=0.0, touchMajor CV>20%
+2. **滑動手勢路徑+速度是正確方向** — 只需 x, y, timestamp，不依賴硬體
+3. **8 個高 SNR 特徵**: endY(6.6), pathLength(5.4), straightness(4.4), xDrift(2.9), s50(2.5), maxSpeed(2.4), avgSpeed(2.2), s75(2.2)
+4. **PIN 按鍵指紋 SNR 幾乎都 < 1** — 瀏覽器/原生觸控數據均不足以區分手指
+5. **行為特徵 > 物理特徵** — 人的動作習慣比觸控感測器數據更穩定、更有區分力
+
+### 測試工具
+
+| 工具 | 路徑 | 說明 |
+|------|------|------|
+| 原生 App | `touch-test-app/` | Capacitor Android App，含 Swipe Up + PIN 測試 |
+| PWA 測試 | `tools/face-id-test.html` | 瀏覽器版，臉 + 滑動聯合測試（待更新）|
 
 ---
 
@@ -157,79 +205,62 @@
 
 ---
 
-## Phase 3: PIN 行為指紋重新設計
+## Phase 3: 滑動手勢 + PIN 行為重新設計
 
-**目標**: 將現有 20 維（含裝置相關特徵）重構為 18 維全比率/模式特徵
+**目標**: 以滑動手勢為主要行為辨識，PIN 時序為輔助
 
 ### 設計原則
 
-- 所有特徵使用比率，不使用絕對值
-- 移除所有裝置相關特徵（觸控面積、力度、加速度計等）
-- 保留可跨裝置的人的肌肉記憶特徵
+- **主要辨識**: 往上滑手勢 — 路徑形狀 + 速度曲線（8 個高 SNR 特徵）
+- **輔助驗證**: PIN 時序 — dwell/flight 比例（穩定但區分力低）
+- **加密用途**: PIN 碼 → Argon2id → AES-256-GCM 加密身份包
+- 只使用 x, y, timestamp — 不依賴觸控感測器硬體
 
-### 新 18 維特徵
+### 滑動手勢特徵（8 維，已驗證）
 
-**節奏特徵 (8 維):**
+| # | 名稱 | 說明 | 不同指 SNR |
+|---|------|------|-----------|
+| 1 | endY | 手指結束垂直位置 | 6.6 |
+| 2 | pathLength | 滑動總路徑長度 | 5.4 |
+| 3 | straightness | 路徑直線程度 | 4.4 |
+| 4 | xDrift | 水平偏移量 | 2.9 |
+| 5 | s50 | 50% 位置的速度 | 2.5 |
+| 6 | maxSpeed | 最大速度 | 2.4 |
+| 7 | avgSpeed | 平均速度 | 2.2 |
+| 8 | s75 | 75% 位置的速度 | 2.2 |
 
-| # | 名稱 | 說明 |
-|---|------|------|
-| 1 | interval_ratio_1_2 | 第1-2鍵間隔 / 平均間隔 |
-| 2 | interval_ratio_2_3 | 第2-3鍵間隔 / 平均間隔 |
-| 3 | interval_ratio_3_4 | 第3-4鍵間隔 / 平均間隔 |
-| 4 | interval_ratio_4_5 | 第4-5鍵間隔 / 平均間隔 |
-| 5 | interval_ratio_5_6 | 第5-6鍵間隔 / 平均間隔 |
-| 6 | hold_ratio_pattern | 持續時間相對模式 |
-| 7 | rhythm_acceleration | 加速/減速趨勢 |
-| 8 | interval_cv | 節奏規律性 |
-
-**空間特徵 (6 維，需固定鍵盤):**
-
-| # | 名稱 | 說明 |
-|---|------|------|
-| 9 | key_offset_x_mean | 鍵內 X 偏移平均 |
-| 10 | key_offset_y_mean | 鍵內 Y 偏移平均 |
-| 11 | key_offset_cv | 偏移穩定性 |
-| 12 | transition_angle | 手指移動角度模式 |
-| 13 | spatial_consistency | 同鍵位置一致性 |
-| 14 | diagonal_preference | 直線 vs 斜線移動 |
-
-**習慣特徵 (4 維):**
+### PIN 時序輔助特徵
 
 | # | 名稱 | 說明 |
 |---|------|------|
-| 15 | error_rate | 打錯的機率 |
-| 16 | error_position | 通常哪位打錯 |
-| 17 | pause_position | 哪位會猶豫 |
-| 18 | total_duration_ratio | 打字速度特徵 |
+| 1-N | dwellProp | 各按鍵持續時間比例 |
+| N+1-2N | flightProp | 各按鍵間飛行時間比例 |
 
-### 移除的特徵
+### 已放棄的特徵
 
-| 特徵 | 移除原因 |
+| 特徵 | 放棄原因 |
 |------|---------|
-| 絕對持續時間/間隔 | 螢幕手感影響 |
-| 觸控面積 radiusX/Y | digitizer 完全不同 |
-| 觸控旋轉角度 | 硬體差異 |
-| 按壓力度 force | 很多裝置 = 0 |
-| 加速度計 | 不同陀螺儀 |
-| 絕對觸控位置 | 改用鍵內偏移 |
+| 觸控面積 touchMajor/Minor | 同指 CV > 20%，SNR < 1 |
+| 壓力 pressure | Samsung 回報二元值 1.0 |
+| 方向 orientation | Samsung 永遠 0.0 |
+| PIN 按鍵比較 dw[i]v[j] | 同指不穩定，頻繁翻轉 |
+| 觸控偏移角度 | iOS/Android 回報 0 |
 
 ### 任務清單
 
-- [ ] 重寫 `behaviorFingerprint.ts` — 18 維特徵提取
-- [ ] 新增鍵中心座標常量（基於 280x360 固定鍵盤）
-- [ ] 計算鍵內偏移（觸控位置 - 鍵中心）
-- [ ] 更新 `lshFingerprint.ts` — PIN LSH 配置改為 18 維
-- [ ] 更新正規化參數
-- [ ] 保留模擬器偵測邏輯（interval_cv 極低 = 機器人）
-- [ ] 單元測試
+- [ ] 重寫 `behaviorFingerprint.ts` — 滑動特徵 + PIN 時序
+- [ ] 新增 `swipeGesture.ts` — 滑動手勢特徵提取
+- [ ] 更新 `lshFingerprint.ts` — 滑動 + PIN 聯合 LSH
+- [ ] 整合到 face-id-test.html — 臉 + 滑動測試
+- [ ] 不同人區分力驗證
+- [ ] 跨裝置穩定性驗證
 
 ### 驗收標準
 
-- [ ] 18 維特徵提取正確
-- [ ] 同一人同裝置 LSH 相似度 >= 0.80
-- [ ] 同一人跨裝置 LSH 相似度 >= 0.65
-- [ ] 不同人 LSH 相似度 < 0.50
-- [ ] 機器人偵測仍有效
+- [ ] 同指滑動 SNR < 1（穩定）
+- [ ] 不同指滑動 SNR > 2（有區分力）
+- [ ] 不同人滑動可區分
+- [ ] 臉 + 滑動 聯合通過率 ≥ 90%
 
 ---
 

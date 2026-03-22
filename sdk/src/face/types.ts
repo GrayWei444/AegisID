@@ -7,13 +7,10 @@
 // Embedding Types
 // ============================================================================
 
-/** 臉部 embedding 向量（CNN 512 維 or landmark fallback 128 維） */
+/** 臉部 embedding 向量（landmark-based 128 維） */
 export type FaceEmbedding = Float32Array;
 
-/** CNN embedding 維度 */
-export const CNN_EMBEDDING_DIM = 512;
-
-/** Landmark embedding 維度（fallback） */
+/** Landmark embedding 維度 */
 export const LANDMARK_EMBEDDING_DIM = 128;
 
 // ============================================================================
@@ -158,8 +155,8 @@ export interface StoredFaceEmbedding {
   iv: string;
   /** 儲存時間 */
   timestamp: number;
-  /** embedding 來源（CNN or landmark） */
-  source?: 'cnn' | 'landmark';
+  /** embedding 來源 */
+  source?: 'landmark' | 'bone-ratio';
   /** embedding 維度 */
   dim?: number;
 }

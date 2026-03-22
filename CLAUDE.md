@@ -39,9 +39,10 @@ AegisTalk 負責通訊和 AI 防詐，AegisID 負責身份和信用。
 ```
 AegisTalk ──import──→ @aegisrd/aegisid SDK
                            │
-                           ├── CNN FaceID
-                           ├── PIN 行為指紋
-                           ├── LSH 匹配
+                           ├── 骨骼比率臉部辨識（唯一 ID）
+                           ├── Anti-spoof 防偽（MiniFASNet）
+                           ├── PIN 碼（純密碼，加密 key）
+                           ├── 裝置指紋（同裝置偵測）
                            ├── 身份包加解密
                            └── VPS API 呼叫
 ```
@@ -50,70 +51,141 @@ AegisTalk ──import──→ @aegisrd/aegisid SDK
 
 ## 2. 核心架構
 
-### 2.1 身份構成
+### 2.1 統一骨骼比率系統（v14 架構）
+
+**一套系統做到底** — 骨骼比率同時服務註冊和登入，不再需要 CNN。
 
 ```
-AegisID 身份 = CNN FaceID (512維) + PIN 行為指紋 (18維)
-
-兩者聯合判定，取信心分數：
-  confidence = face_similarity × 0.6 + behavior_similarity × 0.4
-
-  ≥ 0.80 → 確認同一人
-  0.60~0.79 → 額外驗證
-  < 0.60 → 拒絕
+┌─────────────────────────────────────────────────────────┐
+│                    AegisID 身份認證                       │
+│                                                         │
+│  ┌───────────────────────┐  ┌────────────────────────┐  │
+│  │ 註冊/帳號恢復（一次性） │  │ 日常登入（每次）        │  │
+│  │                       │  │                        │  │
+│  │ 3D 轉頭掃描           │  │ 平面刷臉               │  │
+│  │ → 多角度 landmarks    │  │ → 正面 landmarks       │  │
+│  │ → 3D 重建 (median)    │  │ → 24 bone bins         │  │
+│  │ → 24 bone bins        │  │ → 比對本機正面基準      │  │
+│  │ → face_hash (限速)    │  │ → bin match rate       │  │
+│  │ → account_key (查找)  │  │                        │  │
+│  │                       │  │ + Anti-spoof 防偽      │  │
+│  │ + Anti-spoof 防偽     │  │ + PIN 碼驗證           │  │
+│  │ + 設定 PIN 碼         │  │                        │  │
+│  │ + 裝置指紋 + IP 限速  │  │ → ≥80% bins match     │  │
+│  │                       │  │ → 通過                 │  │
+│  │ → VPS 查重+存儲       │  │                        │  │
+│  └───────────────────────┘  └────────────────────────┘  │
+│                                                         │
+│  每個帳號(face+PIN)綁定詐騙風險分數（跟帳號走，不跟裝置）  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 VPS 三表分離
+### 2.2 註冊流程（3D 掃描 + PIN）
 
-| 表 | 用途 | 壽命 |
-|----|------|------|
-| identity_anchors | 身份查找 + 加密身份包 | 永久 |
-| credit_scores | 交易信用分數 | 永久 |
-| registration_rate_limits | 防批量建號 | 48hr 自動清除 |
+```
+轉頭 3D 掃描 → MediaPipe 468 landmarks × 多角度
+    → 3D 重建（inverse rotation → canonical space → median fusion）
+    → 25 穩定骨骼比率 → 量化 (BIN_WIDTH=0.25, round())
+    → SHA-256(bins) = 唯一 Face ID
+
+同時：取最佳正面幀 → 2D bone bins → 存本機（登入基準）
+
++ Anti-spoof 防偽檢查
++ 設定 PIN 碼 → Argon2id → 加密 key
++ 裝置指紋收集
++ IP 限速檢查
+
+計算雙 hash:
+  - face_hash = SHA-256(25 bone bins)          → 限速用（同臉限 ~2 帳號）
+  - account_key = SHA-256(25 bone bins + PIN)  → 帳號唯一 key
+
+上傳 VPS:
+  - face_hash → registration_rate_limits 查重
+  - account_key + encrypted_blob → identity_anchors 存儲
+  - fraud_risk_score 初始 0（綁 account_key，非 face_hash）
+```
+
+### 2.3 日常登入流程（臉 + PIN）
+
+```
+平面刷臉（5 幀取 median）
+    → 25 骨骼比率 → bins
+    → 比對本機存的正面基準 bins
+    → bin match rate ≥ 80% → 通過
+
++ Anti-spoof 防偽檢查
++ PIN 碼驗證（解密本機身份包）
+
+臉 + PIN 雙重確認 → 放行
+```
+
+### 2.4 帳號恢復流程
+
+```
+新裝置 → 轉頭 3D 掃描 + 輸入 PIN
+    → account_key = SHA-256(bone bins + PIN)
+    → VPS 查表 O(1) → 找到匹配的 identity_anchor
+    → 返回加密身份包
+    → PIN 解密 → 恢復帳號
+```
+
+### 2.5 VPS 三表分離（Option C 雙 hash 架構）
+
+| 表 | Key | 用途 | 壽命 |
+|----|-----|------|------|
+| identity_anchors | `account_key` | 加密身份包查找 | 永久 |
+| credit_scores | `account_key` | 詐騙風險分數（跟帳號走） | 永久 |
+| registration_rate_limits | `face_hash` | 防批量建號（同臉限 ~2 帳號） | 48hr 自動清除 |
+
+**雙 hash 說明：**
+```
+face_hash   = SHA-256(25 bone bins)          → 限速/防批量（同臉共用）
+account_key = SHA-256(25 bone bins + PIN)    → 帳號查找 + 風險分數（每帳號獨立）
+```
 
 **關鍵原則：**
-- face_lsh_hash 和 behavior_lsh_hash 可以關聯（同為生物特徵 hash）
-- 但不可關聯到 IP、裝置、pubkey 等真實身份
+- `face_hash` 只用於 rate limiting — 同一張臉最多建 ~2 帳號
+- `account_key` 用於帳號查找和風險分數 — 即使雙胞胎（同臉不同 PIN）也是獨立帳號
+- 風險分數綁 `account_key`，不綁 `face_hash` — 雙胞胎各自獨立分數
 - 三表使用不同 HMAC secret，無法跨表 JOIN
 - 短期表 48 小時自動清除
 
-### 2.3 CNN FaceID
+### 2.6 骨骼比率臉部辨識
 
-- 模型：MobileFaceNet (w600k_mbf) — 512 維 embedding
-- 防偽：MiniFASNetV2SE — 照片/面具/螢幕偵測
-- 引擎：onnxruntime-web WASM 後端
-- 模型位置：`models/face_recognition.onnx` (13MB) + `models/anti_spoof.onnx` (612KB)
-- 只保留 CNN 版本，Landmark 128 維已廢棄
-- CNN 作為輔助驗證（cosine similarity），不用於唯一 ID
-
-### 2.4 唯一臉部 ID（研究中）
-
-**目標**: 同一個人不管怎麼掃臉，ID 永遠相同。不是模糊匹配，是確定性唯一。
-
-```
-傳統: f(臉A, 臉B) → similarity > threshold → 通過
-AegisID: f(同一張臉, 任意條件) → 永遠相同的 hash ID
-```
-
-**技術路線**:
-- 影像正規化: ArcFace align → gray → histEq → 橢圓遮罩 (SSIM 0.993 ✅)
-- 骨骼比率: 67 個 MediaPipe landmark 比率，篩選穩定子集 → 量化 → hash
-- pHash 4×4: 快速預篩 (100% exact match ✅)
-- 深度路線: ❌ 已放棄（穩定性 26%）
+- 引擎：MediaPipe FaceLandmarker (~4MB) — 468 landmarks
+- 防偽：MiniFASNetV2SE — 照片/面具/螢幕偵測 (612KB)
+- 67 個骨骼比率覆蓋所有面部區域，篩選後 25 個穩定比率
+- 量化：BIN_WIDTH=0.25, round() 量化，3 輪測試 24/24 穩定 ✅
+- 3D 重建：多角度 landmarks → inverse rotation → canonical → median fusion
+- MobileFaceNet CNN 13MB 模型已移除，臉部辨識完全使用骨骼比率系統
+- structuralId.ts 已實作完整：computeBoneRatios, computeStructuralId, matchLoginBins, build3DModel
 
 詳見: `docs/UNIQUE-FACE-ID.md`, `docs/BONE-RATIO-SYSTEM.md`, `docs/IMAGE-NORMALIZATION.md`
 
-### 2.5 PIN 行為指紋
+### 2.7 PIN 碼（純密碼）
 
-- 18 維全比率/模式特徵（移除所有裝置相關絕對值）
-- 固定鍵盤尺寸 280×360px（讓位置特徵跨裝置穩定）
-- LSH 64-bit hash
+- PIN 碼 = 純密碼，不做任何行為指紋分析
+- 用途 1：Argon2id key derivation → 加密/解密身份包
+- 用途 2：帳號恢復時解密身份包
+- 用途 3：雙胞胎區分 — 即使骨骼 hash 相同，PIN 不同就是不同帳號
+- 行為指紋（時序、滑動手勢）經 2026-03-22 研究後放棄：
+  - 滑動手勢：區分力夠但無法產生穩定 hash（速度曲線每次變化太大）
+  - PIN 時序：觸控感測器數據不可靠，時序比率不穩定
 
-### 2.6 LSH (Locality-Sensitive Hashing)
+### 2.8 裝置指紋 + IP 限速（保留）
 
-- Random Hyperplane LSH
-- 固定 seed 確保可重現
-- 漢明距離 → 相似度 → 信心分數
+- 裝置指紋：canvas/webgl/audio hash → 同裝置偵測
+- IP 限速：同 IP 48 小時內限制註冊次數 → 防批量建號
+- 已實作，見 `sdk/src/identity/deviceFingerprint.ts`
+
+### 2.9 詐騙風險分數
+
+- 每個 `account_key`（face+PIN）綁定一個風險分數
+- 跟著帳號走，不跟裝置 — 換手機都是同一個分數
+- 雙胞胎（同臉不同 PIN）= 不同 account_key = 各自獨立風險分數
+- AegisPay 收款人信任判定用
+- VPS `credit_scores` 表的 key = `account_key`
+- VPS `credit_scores` 表的 key 從 LSH hash 改為 face_structure_hash
 
 ---
 
@@ -126,19 +198,20 @@ AegisID/
 │       ├── database.ts                # ✅ DatabaseAdapter 注入（宿主提供 SQLite）
 │       ├── index.ts                   # ✅ 主匯出
 │       │
-│       ├── face/                      # ✅ CNN 臉部辨識
-│       │   ├── cnnInference.ts        # ONNX 推論 (MobileFaceNet + MiniFASNet)
+│       ├── face/                      # ✅ 骨骼比率臉部辨識（統一系統）
+│       │   ├── structuralId.ts        # ✅ 唯一 Face ID（67 骨骼比率 + 3D 重建 + SHA-256）
+│       │   ├── cnnInference.ts        # ✅ Anti-spoof 防偽 (MiniFASNet only, CNN 已移除)
 │       │   ├── embedding.ts           # Landmark embedding (降級 fallback)
-│       │   ├── faceMesh.ts            # MediaPipe wrapper
-│       │   ├── liveness.ts            # 活體偵測
-│       │   ├── storage.ts             # 加密儲存（使用 DatabaseAdapter）
+│       │   ├── faceMesh.ts            # ✅ MediaPipe wrapper (468 landmarks)
+│       │   ├── liveness.ts            # ✅ 活體偵測
+│       │   ├── storage.ts             # ✅ 加密儲存（使用 DatabaseAdapter）
 │       │   ├── types.ts               # 型別
 │       │   ├── index.ts               # 匯出
-│       │   └── useFaceRecognition.ts  # React hook
+│       │   └── useFaceRecognition.ts  # ✅ React hook（AegisTalk 直接引用此 hook）
 │       │
-│       ├── behavior/                  # ✅ PIN 行為指紋
-│       │   ├── behaviorFingerprint.ts # 特徵計算 (18維)
-│       │   └── usePinBehavior.ts      # React hook
+│       ├── behavior/                  # ⚠️ 已棄用（行為指紋研究後放棄）
+│       │   ├── behaviorFingerprint.ts # 保留但不使用
+│       │   └── usePinBehavior.ts      # 保留但不使用
 │       │
 │       ├── lsh/                       # ✅ LSH 系統
 │       │   ├── lshFingerprint.ts      # LSH hash + Face LSH + PIN LSH + 比對
@@ -148,8 +221,7 @@ AegisID/
 │           └── deviceFingerprint.ts   # ✅ 裝置指紋
 │
 ├── models/                            # ONNX 模型
-│   ├── face_recognition.onnx          # MobileFaceNet (13MB)
-│   └── anti_spoof.onnx               # MiniFASNetV2SE (612KB)
+│   └── anti_spoof.onnx               # ✅ MiniFASNetV2SE (612KB) — 防偽（MobileFaceNet 已移除）
 │
 ├── docs/
 │   ├── UNIQUE-FACE-ID.md              # 唯一臉部 ID 核心設計文件
@@ -159,7 +231,12 @@ AegisID/
 │   └── PRIVACY.md                     # 隱私設計文件
 │
 ├── tools/
-│   └── face-id-test.html              # 測試頁面原始碼
+│   └── face-id-test.html              # 臉部辨識測試頁面（骨骼比率 + PIN 行為）
+│
+├── touch-test-app/                    # ⚠️ 觸控研究用（已完成，不再開發）
+│   ├── www/index.html                 # Swipe/PIN 行為測試 UI
+│   ├── capacitor.config.json          # appId: com.aegisrd.touchtest
+│   └── android/                       # Android 原生專案
 ```
 
 **注意：** VPS API 端點（`/aegisid/register`、`/aegisid/lookup`）目前整合在 AegisTalk 的 `api/main.py` 中，尚未分離為獨立 AegisID API。身份包加解密由 AegisTalk 的 `identityAnchor.ts` 處理。
@@ -221,16 +298,32 @@ AEGISID_CLIENT_CREDIT_SECRET  — 客戶端信用 HMAC
 | deviceFingerprint.ts | sdk/src/identity/ | ✅ 已遷移 |
 | ONNX 模型 | models/ | ✅ 已複製 |
 
-### AegisTalk 整合狀態（已完成）
+### AegisTalk 整合架構
+
+**原則：邏輯在 SDK，宿主只消費 API**
+
+```
+@aegisrd/aegisid (SDK)
+  ├── useFaceRecognition()     ← 相機、活體、防偽、embedding 全部在 SDK
+  ├── structuralId.ts          ← 骨骼比率 + 3D 重建 + SHA-256 唯一 ID
+  ├── cnnInference.ts          ← MiniFASNet 防偽 only（MobileFaceNet 已移除）
+  └── faceMesh.ts              ← MediaPipe 468 landmarks
+
+AegisTalk (宿主 App)
+  ├── hooks/useFaceRecognition.ts  ← 薄包裝，re-export from SDK
+  ├── AuthScreen.tsx               ← 只負責 UI + 流程控制
+  └── main.tsx                     ← 啟動時預載模型 + 注入 DatabaseAdapter
+```
 
 | 整合項目 | 狀態 | 說明 |
 |---------|------|------|
 | SDK import | ✅ | `@aegisrd/aegisid` (file-based local package) |
 | DatabaseAdapter 注入 | ✅ | `main.tsx` 呼叫 `setDatabaseAdapter()` |
-| Face LSH | ✅ | `computeFaceLSHHash()` — 512 維 → 128-bit hash |
-| PIN LSH | ✅ | `computePinLSHHash()` — 20 維 → 64-bit hash |
+| useFaceRecognition hook | ✅ | AegisTalk re-export SDK hook，不自己實作 |
+| 模型預載 | ✅ | `main.tsx` 啟動時 `initFaceLandmarker()` + `initCnnModels()` |
+| MobileFaceNet CNN | ❌ 已移除 | 臉部辨識改用骨骼比率系統 |
+| 骨骼比率 structuralId | ✅ SDK 已實作 | 待整合進 hook 取代 landmark embedding |
 | VPS 身份錨點 | ✅ | `identityAnchor.ts` + `/aegisid/register` + `/aegisid/lookup` |
-| AuthScreen 整合 | ✅ | 註冊完成後非阻塞上傳 LSH + 加密身份包 |
 
 ### Git 版本控制
 
@@ -247,16 +340,18 @@ git push
 
 ### 隱私紅線
 
-- face_lsh_hash 和 behavior_lsh_hash 可關聯
+- face_structure_hash 和 behavior_lsh_hash 可關聯（同為匿名生物特徵 hash）
 - 但絕不與 IP/裝置/pubkey/真實身份關聯
 - rate_limits 48 小時自動清除
 - VPS 永遠無法解密 encrypted_blob
+- 正面骨骼 bins 只存本機，不上傳 VPS
 
 ### 測試前置
 
-- CNN 跨鏡頭穩定性必須先驗證再上線
+- 骨骼比率 3D 穩定性：24/24 穩定 ✅（BIN_WIDTH=0.25, round()）
+- 骨骼比率 3D vs 平面 match rate：需驗證 ≥80%
 - PIN 18 維跨裝置穩定性必須先驗證再上線
-- 聯合信心分數閾值需要實測調整
+- 登入三層聯合閾值需要實測調整
 
 ---
 

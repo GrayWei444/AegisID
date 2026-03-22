@@ -1,12 +1,14 @@
 /**
- * Phase 26: Face Recognition Hook
- * Phase 26b: CNN 邊挑戰邊擷取 + 防偽
+ * Face Recognition Hook
  *
  * 管理相機串流、臉部偵測迴圈、活體狀態機
  *
  * 兩種模式：
- * - register: 主動活體偵測（眨眼+轉頭），邊挑戰邊擷取 CNN embedding + 防偽
- * - verify: 被動活體偵測（自然眨眼+微動），邊偵測邊擷取 CNN embedding
+ * - register: 主動活體偵測（眨眼+轉頭），收集 landmark embedding + anti-spoof
+ * - verify: 被動活體偵測（自然眨眼+微動），收集 landmark embedding
+ *
+ * 注意：MobileFaceNet CNN embedding 已移除，臉部辨識改用骨骼比率系統（structuralId.ts）。
+ * 此 hook 使用 landmark embedding 作為 fallback，anti-spoof 仍使用 MiniFASNet。
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -23,16 +25,14 @@ import {
 import {
   cosineSimilarity,
   computeStableEmbedding,
-  computeStableCnnEmbedding,
   computeEmbeddingConsistency,
 } from './embedding';
 import {
   initCnnModels,
   isCnnReady,
-  isCnnFailed,
-  extractCnnEmbedding,
   detectSpoof,
   closeCnnModels,
+  resetBboxSmoothing,
 } from './cnnInference';
 import {
   saveFaceEmbedding,
@@ -52,8 +52,11 @@ import type {
 // Constants
 // ============================================================================
 
-/** 比對閾值 */
-const SIMILARITY_THRESHOLD = 0.6;
+/** 預設比對閾值 */
+const DEFAULT_MATCH_THRESHOLD = 0.6;
+
+/** 預設自動登入閾值 */
+const DEFAULT_AUTO_LOGIN_THRESHOLD = 0.75;
 
 /** Landmark fallback 時的擷取幀數 */
 const CAPTURE_FRAMES = 5;
@@ -64,13 +67,26 @@ const DETECTION_INTERVAL = 100;
 /** CNN 推論間隔 (ms) — 每 500ms 跑一次 CNN */
 const CNN_INTERVAL = 500;
 
+/** 診斷日誌間隔 (ms) */
+const DIAGNOSTIC_LOG_INTERVAL = 3000;
+
 // ============================================================================
-// Hook
+// Types
 // ============================================================================
 
-interface UseFaceRecognitionOptions {
+export interface UseFaceRecognitionOptions {
   /** 註冊 or 驗證 */
   mode: 'register' | 'verify';
+  /** 比對閾值（verify 模式），default 0.6 */
+  matchThreshold?: number;
+  /** 自動登入閾值（verify 模式），default 0.75 */
+  autoLoginThreshold?: number;
+}
+
+export interface VerifyFaceResult {
+  matched: boolean;
+  similarity: number;
+  autoLoginReady: boolean;
 }
 
 interface UseFaceRecognitionReturn {
@@ -99,12 +115,20 @@ interface UseFaceRecognitionReturn {
   /** 註冊臉部（register 模式完成後呼叫） */
   registerFace: (encryptionKey: CryptoKey) => Promise<boolean>;
   /** 驗證臉部（verify 模式，自動執行） */
-  verifyFace: (encryptionKey: CryptoKey) => Promise<boolean>;
+  verifyFace: (encryptionKey: CryptoKey) => Promise<VerifyFaceResult>;
   /** 重置狀態 */
   reset: () => void;
 }
 
-export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFaceRecognitionReturn {
+// ============================================================================
+// Hook
+// ============================================================================
+
+export function useFaceRecognition({
+  mode,
+  matchThreshold = DEFAULT_MATCH_THRESHOLD,
+  autoLoginThreshold = DEFAULT_AUTO_LOGIN_THRESHOLD,
+}: UseFaceRecognitionOptions): UseFaceRecognitionReturn {
   const [status, setStatus] = useState<FaceDetectionStatus>('idle');
   const [currentChallenge, setCurrentChallenge] = useState<LivenessChallenge | null>(null);
   const [challengeProgress, setChallengeProgress] = useState({ current: 0, total: 2 });
@@ -131,14 +155,19 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
   const lastTimestampRef = useRef(0);
   const statusRef = useRef<FaceDetectionStatus>('idle');
 
-  // Phase 26b: CNN 相關 refs
+  // Anti-spoof 相關 refs
   const lastCnnTimestampRef = useRef(0);
-  const cnnEmbeddingsRef = useRef<Float32Array[]>([]);
   const spoofVotesRef = useRef<SpoofDetectionResult[]>([]);
-  const cnnRunningRef = useRef(false); // 防止同時跑兩次 CNN
+  const cnnRunningRef = useRef(false); // 防止同時跑兩次推論
 
   // Verify mode: 被動活體已通過但 CNN 尚未就緒，持續等待
   const livenessPassedRef = useRef(false);
+
+  // Diagnostic counters
+  const faceDetectedCountRef = useRef(0);
+  const noFaceCountRef = useRef(0);
+  const lastDiagnosticLogRef = useRef(0);
+  const firstFaceLoggedRef = useRef(false);
 
   // =========================================================================
   // Camera Management
@@ -147,6 +176,9 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
   const startCamera = useCallback(async () => {
     try {
       setStatusAndRef('loading');
+
+      // Reset bbox smoothing for new session
+      resetBboxSmoothing();
 
       // 先啟動相機 + MediaPipe（必須），CNN 在背景載入（不阻塞相機啟動）
       const [cameraResult, mediapipeResult] = await Promise.allSettled([
@@ -158,6 +190,8 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
 
       // 相機是必須的
       if (cameraResult.status === 'rejected') {
+        const err = cameraResult.reason as { name?: string; message?: string } | undefined;
+        console.error('[FaceRec] Camera getUserMedia REJECTED:', err?.name, err?.message);
         throw cameraResult.reason;
       }
       // MediaPipe 是必須的
@@ -165,17 +199,17 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
         throw mediapipeResult.reason;
       }
 
-      // CNN 模型在背景載入（13MB+，不阻塞相機啟動）
+      // Anti-spoof 模型在背景載入（612KB，不阻塞相機啟動）
       if (!isCnnReady()) {
         initCnnModels().then(() => {
           setCnnReady(true);
-          devLog('[FaceRec] CNN models ready (background)');
+          devLog('[FaceRec] Anti-spoof model ready (background)');
         }).catch((err) => {
-          devWarn('[FaceRec] CNN models failed to load:', err);
+          devWarn('[FaceRec] Anti-spoof model failed to load:', err);
         });
       } else {
         setCnnReady(true);
-        devLog('[FaceRec] CNN models already cached');
+        devLog('[FaceRec] Anti-spoof model already cached');
       }
 
       const stream = cameraResult.value as MediaStream;
@@ -249,7 +283,14 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
       // 偵測人臉
       const landmarks = detectFace(video, now);
 
+      // Diagnostic logging every 3 seconds
+      if (now - lastDiagnosticLogRef.current >= DIAGNOSTIC_LOG_INTERVAL) {
+        lastDiagnosticLogRef.current = now;
+        console.error(`[FaceRec] Detection: noFace=${noFaceCountRef.current}, face=${faceDetectedCountRef.current}, antiSpoof=${isCnnReady()}`);
+      }
+
       if (!landmarks) {
+        noFaceCountRef.current++;
         if (statusRef.current !== 'ready' && statusRef.current !== 'loading') {
           setStatusAndRef('ready');
         }
@@ -258,6 +299,14 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
       }
 
       // 偵測到人臉
+      faceDetectedCountRef.current++;
+
+      // Log first face detection
+      if (!firstFaceLoggedRef.current) {
+        firstFaceLoggedRef.current = true;
+        devLog(`[FaceRec] First face detected (mode=${mode})`);
+      }
+
       const geometry = extractFaceGeometry(landmarks);
 
       if (mode === 'register') {
@@ -277,16 +326,19 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
   // =========================================================================
 
   /**
-   * 每 500ms 擷取一次 CNN embedding + 防偽推論
-   * 在挑戰期間持續執行，挑戰完成時 embedding 已收集完畢
+   * 每 500ms 執行一次防偽推論
+   * 在挑戰期間持續執行，收集防偽投票結果
+   *
+   * 注意：MobileFaceNet CNN embedding 已移除，臉部辨識改用骨骼比率系統。
+   * 此函式現在只負責 anti-spoof 偵測。
    */
-  const maybeCnnCapture = useCallback(async (
+  const maybeSpoofCapture = useCallback(async (
     video: HTMLVideoElement,
     geometry: ReturnType<typeof extractFaceGeometry>,
     now: number,
-    detector: ActiveLivenessDetector | null
+    _detector: ActiveLivenessDetector | null
   ): Promise<void> => {
-    // CNN 未就緒 or 還在跑上一次 → 跳過
+    // Anti-spoof 未就緒 or 還在跑上一次 → 跳過
     if (!isCnnReady() || cnnRunningRef.current) return;
 
     // 500ms 間隔
@@ -297,33 +349,15 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     try {
       const faceBox = geometry.boundingBox;
 
-      // 並行跑 embedding + 防偽
-      const [cnnEmb, spoofResult] = await Promise.all([
-        extractCnnEmbedding(video, faceBox),
-        detectSpoof(video, faceBox),
-      ]);
+      // 只跑防偽推論
+      const spoofResult = await detectSpoof(video, faceBox);
 
-      // 累積結果
-      cnnEmbeddingsRef.current.push(cnnEmb);
+      // 累積防偽結果
       spoofVotesRef.current.push(spoofResult);
 
-      // 如果有 ActiveLivenessDetector，記錄快照
-      if (detector) {
-        const challenge = detector.getCurrentChallenge();
-        if (challenge) {
-          detector.addSnapshot({
-            challenge,
-            phase: detector.getCurrentPhase(),
-            embedding: cnnEmb,
-            geometry,
-            timestamp: now,
-          });
-        }
-      }
-
-      devLog(`[FaceRec/CNN] Embedding #${cnnEmbeddingsRef.current.length}, spoof: ${spoofResult.confidence.toFixed(3)} (${spoofResult.isReal ? 'real' : 'spoof'})`);
+      devLog(`[FaceRec/AntiSpoof] Vote #${spoofVotesRef.current.length}, confidence: ${spoofResult.confidence.toFixed(3)} (${spoofResult.isReal ? 'real' : 'spoof'})`);
     } catch (err) {
-      devWarn('[FaceRec/CNN] Inference error:', err);
+      devWarn('[FaceRec/AntiSpoof] Inference error:', err);
     } finally {
       cnnRunningRef.current = false;
     }
@@ -379,32 +413,33 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     const detector = activeDetectorRef.current;
     if (!detector) return;
 
-    // Phase 26b: 邊挑戰邊擷取 CNN embedding + 防偽（async，不阻塞偵測迴圈）
-    maybeCnnCapture(video, geometry, now, detector);
+    // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
+    maybeSpoofCapture(video, geometry, now, detector);
+
+    // 收集 landmark frames 用於 embedding
+    capturedFramesRef.current.push(landmarks);
 
     const challenge = detector.getCurrentChallenge();
 
     if (!challenge) {
-      // 所有挑戰完成 — 計算最終 embedding
+      // 所有挑戰完成 — 計算最終 landmark embedding
       if (statusRef.current !== 'capturing') {
         setStatusAndRef('capturing');
       }
 
-      // 使用 CNN embedding（已在挑戰期間收集）
-      if (cnnEmbeddingsRef.current.length > 0) {
-        capturedEmbeddingRef.current = computeStableCnnEmbedding(cnnEmbeddingsRef.current);
+      if (capturedFramesRef.current.length > 0) {
+        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
         const antiSpoof = computeAntiSpoofResult(detector);
         const result = { ...detector.getResult(), antiSpoof };
         setLivenessResult(result);
         setAntiSpoofResult(antiSpoof);
         isRunningRef.current = false;
-        devLog('[FaceRec] CNN embedding captured from', cnnEmbeddingsRef.current.length, 'frames');
+        devLog('[FaceRec] Register challenges complete, frames:', capturedFramesRef.current.length);
+        devLog('[FaceRec] Anti-spoof result computed, score:', antiSpoof.score.toFixed(3));
         return;
       }
 
-      // CNN 載入失敗 → 跳過臉部註冊（不 fallback 到 landmark）
-      // 128-dim landmark vs 512-dim CNN 無法比對，fallback 只會導致後續驗證永遠失敗
-      devWarn('[FaceRec] CNN unavailable — skipping face registration');
+      devWarn('[FaceRec] No landmark frames captured');
       setStatusAndRef('failed');
       setLivenessResult(detector.getResult());
       isRunningRef.current = false;
@@ -418,7 +453,7 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     setChallengeProgress(detector.getProgress());
 
     if (completed) {
-      devLog('[FaceRec] All challenges completed');
+      devLog('[FaceRec] All challenges completed, frame count:', capturedFramesRef.current.length);
     }
 
     // 檢查超時
@@ -429,7 +464,7 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
       setLivenessResult(result);
       isRunningRef.current = false;
     }
-  }, [maybeCnnCapture, computeAntiSpoofResult, setStatusAndRef]);
+  }, [maybeSpoofCapture, computeAntiSpoofResult, setStatusAndRef]);
 
   // =========================================================================
   // Verify Mode: Passive Liveness + 邊偵測邊擷取
@@ -444,58 +479,48 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     const detector = passiveDetectorRef.current;
     if (!detector) return;
 
-    // CNN 已確認無法載入（如 iOS OOM）→ 直接跳過臉部驗證
-    if (isCnnFailed() && cnnEmbeddingsRef.current.length === 0) {
-      devWarn('[FaceRec] CNN failed — skipping face verify');
-      setLivenessResult(detector.getResult());
-      setStatusAndRef('capturing');
-      isRunningRef.current = false;
-      return;
-    }
-
     setStatusAndRef('face_detected');
 
-    // Phase 26b: 邊偵測邊擷取 CNN embedding
-    maybeCnnCapture(video, geometry, now, null);
+    // 邊偵測邊擷取防偽推論
+    maybeSpoofCapture(video, geometry, now, null);
 
-    // 檢查被動活體是否已通過（包含之前已通過但等 CNN 的情況）
+    // 收集 landmark frames 用於 embedding
+    capturedFramesRef.current.push(landmarks);
+
+    // 檢查被動活體是否已通過
     const passed = livenessPassedRef.current || detector.processFrame(geometry);
 
     if (passed) {
       livenessPassedRef.current = true;
 
-      // 使用 CNN embedding（已在被動偵測期間收集）
-      if (cnnEmbeddingsRef.current.length > 0) {
-        capturedEmbeddingRef.current = computeStableCnnEmbedding(cnnEmbeddingsRef.current);
+      // 使用 landmark embedding
+      if (capturedFramesRef.current.length >= CAPTURE_FRAMES) {
+        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
+
+        // Compute and set anti-spoof result
+        const antiSpoof = computeAntiSpoofResult(null);
+        setAntiSpoofResult(antiSpoof);
+
         setLivenessResult(detector.getResult());
         setStatusAndRef('capturing');
-        devLog('[FaceRec] Passive liveness passed, CNN embedding captured');
+        devLog('[FaceRec] Passive liveness passed, frames:', capturedFramesRef.current.length, ', antiSpoof score:', antiSpoof.score.toFixed(3));
         return;
       }
 
-      // CNN 不可用 → 跳過（不 fallback 到 landmark）
-      if (!isCnnReady()) {
-        devWarn('[FaceRec] CNN unavailable — skipping face verify');
-        setLivenessResult(detector.getResult());
-        setStatusAndRef('capturing');
-        isRunningRef.current = false;
-        return;
-      }
-
-      // CNN 就緒但尚未擷取到 embedding → 繼續跑下一個 CNN cycle
-      devLog('[FaceRec] Liveness passed, CNN ready but no embedding yet, waiting...');
+      // 繼續收集 frames
+      devLog('[FaceRec] Liveness passed, collecting more frames...', capturedFramesRef.current.length, '/', CAPTURE_FRAMES);
       return;
     }
 
     // 檢查超時（被動活體未通過 + 超時）
     if (detector.isTimedOut()) {
-      if (cnnEmbeddingsRef.current.length > 0) {
-        capturedEmbeddingRef.current = computeStableCnnEmbedding(cnnEmbeddingsRef.current);
+      if (capturedFramesRef.current.length > 0) {
+        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
       }
       setLivenessResult(detector.getResult());
-      devLog('[FaceRec] Passive liveness timeout — skipping face verify');
+      devLog('[FaceRec] Passive liveness timeout — using', capturedFramesRef.current.length, 'frames');
     }
-  }, [maybeCnnCapture, setStatusAndRef]);
+  }, [maybeSpoofCapture, computeAntiSpoofResult, setStatusAndRef]);
 
   // =========================================================================
   // Save / Verify Embedding
@@ -521,11 +546,13 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     }
   }, []);
 
-  const verifyFace = useCallback(async (encryptionKey: CryptoKey): Promise<boolean> => {
+  const verifyFace = useCallback(async (encryptionKey: CryptoKey): Promise<VerifyFaceResult> => {
+    const failResult: VerifyFaceResult = { matched: false, similarity: 0, autoLoginReady: false };
+
     const capturedEmb = capturedEmbeddingRef.current;
     if (!capturedEmb) {
       devWarn('[FaceRec] No embedding captured for verification');
-      return false;
+      return failResult;
     }
 
     try {
@@ -533,31 +560,36 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
       if (!storedEmb) {
         devWarn('[FaceRec] No stored embedding found');
         setStatusAndRef('failed');
-        return false;
+        return failResult;
       }
 
       // 維度不同 = 不同來源（CNN vs landmark），無法比對
       if (capturedEmb.length !== storedEmb.length) {
         devWarn('[FaceRec] Embedding dimension mismatch:', capturedEmb.length, 'vs', storedEmb.length);
         setStatusAndRef('failed');
-        return false;
+        return failResult;
       }
 
       const sim = cosineSimilarity(capturedEmb, storedEmb);
       setSimilarity(sim);
 
-      const isMatch = sim >= SIMILARITY_THRESHOLD;
+      const isMatch = sim >= matchThreshold;
+      const autoLoginReady = sim >= autoLoginThreshold;
       setStatusAndRef(isMatch ? 'verified' : 'failed');
       setIsVerified(isMatch);
 
-      devLog(`[FaceRec] Verification: similarity=${sim.toFixed(3)}, match=${isMatch}, dim=${capturedEmb.length}`);
-      return isMatch;
+      // Compute and set anti-spoof result for verify mode
+      const antiSpoof = computeAntiSpoofResult(null);
+      setAntiSpoofResult(antiSpoof);
+
+      devLog(`[FaceRec] Verification: similarity=${sim.toFixed(3)}, match=${isMatch}, autoLoginReady=${autoLoginReady}, dim=${capturedEmb.length}, antiSpoof=${antiSpoof.score.toFixed(3)}`);
+      return { matched: isMatch, similarity: sim, autoLoginReady };
     } catch (err) {
       devWarn('[FaceRec] Verification failed:', err);
       setStatusAndRef('failed');
-      return false;
+      return failResult;
     }
-  }, []);
+  }, [matchThreshold, autoLoginThreshold, computeAntiSpoofResult]);
 
   // =========================================================================
   // Reset
@@ -576,12 +608,16 @@ export function useFaceRecognition({ mode }: UseFaceRecognitionOptions): UseFace
     capturedEmbeddingRef.current = null;
     activeDetectorRef.current = null;
     passiveDetectorRef.current = null;
-    // Phase 26b: reset CNN state
-    cnnEmbeddingsRef.current = [];
+    // Reset anti-spoof state
     spoofVotesRef.current = [];
     cnnRunningRef.current = false;
     livenessPassedRef.current = false;
     lastCnnTimestampRef.current = 0;
+    // Reset diagnostic counters
+    faceDetectedCountRef.current = 0;
+    noFaceCountRef.current = 0;
+    lastDiagnosticLogRef.current = 0;
+    firstFaceLoggedRef.current = false;
   }, [stopCamera]);
 
   // Cleanup on unmount

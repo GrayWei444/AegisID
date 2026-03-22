@@ -1,8 +1,12 @@
 /**
- * Phase 26: Face Recognition Module
- * Phase 26b: CNN 臉部特徵擷取 + 防偽
+ * Face Recognition Module
  *
- * Re-exports for face recognition services
+ * - 骨骼比率臉部辨識（structuralId.ts）— 主要路線
+ * - Anti-spoof 防偽（MiniFASNetV2SE）
+ * - MediaPipe FaceLandmarker（468 landmarks）
+ * - Landmark-based embedding（降級 fallback）
+ *
+ * MobileFaceNet CNN embedding 已移除，臉部辨識改用骨骼比率系統。
  */
 
 // Types
@@ -23,7 +27,7 @@ export type {
   SpoofDetectionResult,
 } from './types';
 
-export { CNN_EMBEDDING_DIM, LANDMARK_EMBEDDING_DIM } from './types';
+export { LANDMARK_EMBEDDING_DIM } from './types';
 
 // Face Mesh (MediaPipe)
 export {
@@ -38,26 +42,33 @@ export {
 // Liveness Detection
 export { ActiveLivenessDetector, PassiveLivenessDetector } from './liveness';
 
-// Embedding
+// Embedding (landmark-based)
 export {
   extractFaceEmbedding,
   cosineSimilarity,
   computeStableEmbedding,
-  computeStableCnnEmbedding,
   computeEmbeddingConsistency,
 } from './embedding';
 
-// CNN Inference (Phase 26b)
+// Anti-Spoof Inference (MiniFASNetV2SE)
 export {
+  initAntiSpoofModel,
   initCnnModels,
+  isAntiSpoofReady,
   isCnnReady,
+  isAntiSpoofInitializing,
   isCnnInitializing,
+  isAntiSpoofFailed,
   isCnnFailed,
-  extractCnnEmbedding,
   detectSpoof,
+  closeAntiSpoofModel,
   closeCnnModels,
   resetBboxSmoothing,
 } from './cnnInference';
+
+// React Hook
+export { useFaceRecognition } from './useFaceRecognition';
+export type { UseFaceRecognitionOptions, VerifyFaceResult } from './useFaceRecognition';
 
 // Storage
 export {
