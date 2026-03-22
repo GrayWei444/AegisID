@@ -136,3 +136,62 @@ export {
   checkSameDevice,
   checkDeviceFingerprintWithBackend,
 } from './identity';
+
+// ============================================================================
+// Auth (PIN + Argon2id + Lockout)
+// ============================================================================
+
+export {
+  authService,
+  migrateAuthToSQLite,
+  deriveKey,
+  deriveRecoveryKey,
+  generateSalt,
+  secureCompare,
+  isValidPin,
+  encryptWithPin,
+  decryptWithPin,
+  encryptPrivateKeyWithPin,
+  decryptPrivateKeyWithPin,
+  toBuffer,
+  arrayBufferToBase64,
+  base64ToArrayBuffer,
+  uint8ToBase64,
+  base64ToUint8,
+  ARGON2_CONFIG,
+  PIN_LENGTH,
+  BACKUP_AUTH_SALT,
+} from './auth';
+
+// ============================================================================
+// Anchor (Identity Anchor for Cross-Device Recovery)
+// ============================================================================
+
+export type {
+  IdentityBlob,
+  RegisterResult,
+  LookupResult,
+} from './anchor';
+
+export {
+  registerIdentityAnchor,
+  lookupIdentityAnchor,
+  decryptAnchorBlob,
+  setAnchorApiUrl,
+} from './anchor';
+
+// ============================================================================
+// Anti-Abuse (Same-Source Detection)
+// ============================================================================
+
+export type {
+  SameSourceCheckResult,
+  SameSourceStats,
+} from './antiAbuse';
+
+export {
+  checkSameSource,
+  getSameSourceStats,
+  setSameSourceApiUrl,
+  setSameSourceSkipCheck,
+} from './antiAbuse';

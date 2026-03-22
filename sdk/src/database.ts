@@ -13,6 +13,7 @@
 export interface DatabaseAdapter {
   getSetting(key: string): Promise<string | null | undefined>;
   setSetting(key: string, value: string): Promise<void>;
+  deleteSetting?(key: string): Promise<void>;
 }
 
 // ============================================================================
@@ -56,5 +57,17 @@ export async function setSetting(key: string, value: string): Promise<void> {
     localStorage.setItem(`aegisid_db_${key}`, value);
   } catch {
     // Storage full or unavailable — silently ignore
+  }
+}
+
+export async function deleteSetting(key: string): Promise<void> {
+  try {
+    if (adapter?.deleteSetting) {
+      await adapter.deleteSetting(key);
+      return;
+    }
+    localStorage.removeItem(`aegisid_db_${key}`);
+  } catch {
+    // silently ignore
   }
 }

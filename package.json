@@ -25,6 +25,18 @@
     "./identity": {
       "types": "./dist/identity/index.d.ts",
       "import": "./dist/identity/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "import": "./dist/auth/index.js"
+    },
+    "./anchor": {
+      "types": "./dist/anchor/index.d.ts",
+      "import": "./dist/anchor/index.js"
+    },
+    "./antiAbuse": {
+      "types": "./dist/antiAbuse/index.d.ts",
+      "import": "./dist/antiAbuse/index.js"
     }
   },
   "files": [
@@ -46,6 +58,7 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.18",
+    "hash-wasm": "^4.12.0",
     "onnxruntime-web": "^1.24.3"
   },
   "devDependencies": {
