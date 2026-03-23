@@ -163,6 +163,7 @@ button.verify{background:#ffc107;color:#000}
     <button id="b-touch-test" onclick="doTouchTest()" style="background:#06b6d4;color:#fff">&#9757; Touch Test</button>
     <button onclick="doSwipeTest()" style="background:#0ea5e9;color:#fff">⬆ Swipe Test</button>
     <button id="b-cnn-stab" onclick="doCnnStability()" disabled style="background:#06b6d4;color:#000">&#128300; CNN Test</button>
+    <button id="b-autobw" onclick="doAutoBW()" disabled style="background:#10b981;color:#000;font-weight:700">&#9881; Auto BW &times;3</button>
     <button id="b-clear" onclick="doClear()" disabled>&#128465; Clear</button>
     <button onclick="document.getElementById('log').style.display=document.getElementById('log').style.display==='none'?'block':'none'">&#128203; Log</button>
   </div>
@@ -626,6 +627,23 @@ function quantize(v) {
 }
 
 function quantize3D(v, bw) {
+  var raw = v / bw;
+  var frac = raw - Math.floor(raw);
+  if (frac >= 0.80) return Math.ceil(raw);
+  return Math.floor(raw);
+}
+
+// Per-feature adaptive bin widths (初始全部 0.25, Auto BW 校正後更新)
+var PER_FEATURE_BW = {};
+var autoBWEnabled = false;
+
+function getFeatureBW(featureId, is3D) {
+  if (autoBWEnabled && PER_FEATURE_BW[featureId]) return PER_FEATURE_BW[featureId];
+  return is3D ? 0.25 : BIN_WIDTH;
+}
+
+function quantizeAdaptive(v, featureId, is3D) {
+  var bw = getFeatureBW(featureId, is3D);
   var raw = v / bw;
   var frac = raw - Math.floor(raw);
   if (frac >= 0.80) return Math.ceil(raw);
@@ -3002,7 +3020,7 @@ async function doTriangulate3D() {
       if (vals.length >= 2) {
         vals.sort(function(a, b) { return a - b; });
         var medVal = vals[Math.floor(vals.length / 2)];
-        bins2D[k] = quantize(medVal);
+        bins2D[k] = quantizeAdaptive(medVal, k, false);
         rawValues2D[k] = medVal;
       }
     }
@@ -3034,7 +3052,7 @@ async function doTriangulate3D() {
   for (var si3 = 0; si3 < STABLE_3D_FEATURES.length; si3++) {
     var fk = STABLE_3D_FEATURES[si3];
     if (dr3[fk] !== undefined) {
-      bins3D[fk] = quantize3D(dr3[fk], BIN_3D);
+      bins3D[fk] = quantizeAdaptive(dr3[fk], fk, true);
       rawValues3D[fk] = dr3[fk];
     }
   }
@@ -3717,6 +3735,7 @@ function enableButtons() {
   document.getElementById('b-3d-multi').disabled = false;
   document.getElementById('b-login').disabled = false;
   document.getElementById('b-cnn-stab').disabled = false;
+  document.getElementById('b-autobw').disabled = false;
   document.getElementById('b-clear').disabled = false;
 }
 
@@ -3727,8 +3746,348 @@ function disableAllButtons() {
   document.getElementById('b-3d-multi').disabled = true;
   document.getElementById('b-login').disabled = true;
   document.getElementById('b-cnn-stab').disabled = true;
+  document.getElementById('b-autobw').disabled = true;
   document.getElementById('b-clear').disabled = true;
 }
+
+// ============================================================
+// AUTO BW CALIBRATION — Per-Feature Adaptive Bin Width
+// ============================================================
+
+async function doAutoBW() {
+  var ROUNDS = 3;
+  disableAllButtons();
+  st('⚙ Auto BW Calibration — scanning ' + ROUNDS + ' rounds...', 'info');
+
+  // Collect raw values per feature across rounds
+  var allRaw2D = {}; // featureId → [val1, val2, val3]
+  var allRaw3D = {};
+  var allHashes2D = [];
+  var allHashes3D = [];
+  var allHashesCombined = [];
+
+  for (var round = 0; round < ROUNDS; round++) {
+    st('⚙ Round ' + (round + 1) + '/' + ROUNDS + ' — Turn your head slowly LEFT → RIGHT...', 'info');
+
+    // Capture frames (same as doTriangulate3D)
+    var scanFrames = [];
+    var scanStart = performance.now();
+    var zoneCounts = [0, 0, 0, 0, 0];
+    var zoneMin = [8, 8, 15, 8, 8];
+    var SCAN_TIMEOUT = 15000;
+
+    document.getElementById('yaw-indicator').style.display = 'block';
+
+    while (performance.now() - scanStart < SCAN_TIMEOUT) {
+      var det = await detectOnce();
+      if (!det) { await sleep(30); continue; }
+
+      var yaw = det.yaw;
+      var zi = yaw > 0.20 ? 0 : yaw > 0.08 ? 1 : yaw > -0.08 ? 2 : yaw > -0.20 ? 3 : 4;
+      zoneCounts[zi]++;
+
+      scanFrames.push({ landmarks: det.landmarks, matrix: det.matrix, yaw: yaw });
+
+      // Update zone display
+      var zoneNames = ['FL','L','C','R','FR'];
+      var zcHtml = '';
+      for (var zzi = 0; zzi < 5; zzi++) {
+        var ok = zoneCounts[zzi] >= zoneMin[zzi];
+        zcHtml += '<span style="color:' + (ok ? '#0f0' : '#f44') + '">'
+          + zoneNames[zzi] + ':' + zoneCounts[zzi] + '/' + zoneMin[zzi] + '</span>  ';
+      }
+      document.getElementById('yc-center').innerHTML = zcHtml;
+
+      // Check all zones met
+      var allMet = true;
+      for (var zci = 0; zci < 5; zci++) {
+        if (zoneCounts[zci] < zoneMin[zci]) { allMet = false; break; }
+      }
+      if (allMet && scanFrames.length >= 80) break;
+
+      await sleep(10);
+    }
+
+    document.getElementById('yaw-indicator').style.display = 'none';
+    lg('[AutoBW] Round ' + (round + 1) + ': ' + scanFrames.length + ' frames');
+
+    if (scanFrames.length < 30) {
+      st('⚙ Round ' + (round + 1) + ' failed — not enough frames. Retry.', 'err');
+      round--;
+      continue;
+    }
+
+    // Compute 2D ratios from strict frontal frames
+    var centerFrames = scanFrames.filter(function(f) {
+      if (Math.abs(f.yaw) >= 0.05) return false;
+      var noseRatio = (f.landmarks[1].y - f.landmarks[10].y) / (f.landmarks[152].y - f.landmarks[10].y);
+      return noseRatio > 0.42 && noseRatio < 0.58;
+    });
+    if (centerFrames.length < 8) {
+      centerFrames = scanFrames.filter(function(f) { return Math.abs(f.yaw) < 0.08; });
+    }
+    centerFrames.sort(function(a, b) { return Math.abs(a.yaw) - Math.abs(b.yaw); });
+    var nearFrontal = centerFrames.slice(0, 20);
+
+    var frontalSets = [];
+    for (var fri = 0; fri < nearFrontal.length; fri++) {
+      var fRatios = boneRatios(nearFrontal[fri].landmarks);
+      if (fRatios) frontalSets.push(fRatios);
+    }
+
+    if (frontalSets.length >= 2) {
+      for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+        var k = WHITELIST_RATIOS[wi];
+        var vals = [];
+        for (var si = 0; si < frontalSets.length; si++) {
+          if (frontalSets[si][k] !== undefined) vals.push(frontalSets[si][k]);
+        }
+        if (vals.length >= 2) {
+          vals.sort(function(a, b) { return a - b; });
+          var medVal = vals[Math.floor(vals.length / 2)];
+          if (!allRaw2D[k]) allRaw2D[k] = [];
+          allRaw2D[k].push(medVal);
+        }
+      }
+    }
+
+    // Compute 3D via triangulation
+    var result = buildTrue3DModel(scanFrames);
+    if (result && result.model) {
+      var dr = result.depthRatios;
+      var STABLE_3D = [
+        'T01_temple_width', 'T03_cheek_jaw_ratio', 'E04_orbital_width_R',
+        'E05_intercanthal', 'N05_alar_width_3d', 'F05_face_side',
+        'G02_face_width_height', 'T02_temple_recess', 'T05_bizygomatic',
+        'E03_orbital_width_L', 'F04_bigonial'
+      ];
+      for (var si3 = 0; si3 < STABLE_3D.length; si3++) {
+        var fk = STABLE_3D[si3];
+        if (dr[fk] !== undefined) {
+          if (!allRaw3D[fk]) allRaw3D[fk] = [];
+          allRaw3D[fk].push(dr[fk]);
+        }
+      }
+    }
+  }
+
+  // ================================================================
+  // Calculate per-feature optimal BW
+  // ================================================================
+  var bwResults = [];
+  var allFeatures = Object.keys(allRaw2D).concat(Object.keys(allRaw3D));
+  var seen = {};
+
+  function calcBW(featureId, values, is3D) {
+    if (values.length < 2) return null;
+    var min = values[0], max = values[0];
+    for (var i = 1; i < values.length; i++) {
+      if (values[i] < min) min = values[i];
+      if (values[i] > max) max = values[i];
+    }
+    var range = max - min;
+    var mean = 0;
+    for (var i2 = 0; i2 < values.length; i2++) mean += values[i2];
+    mean /= values.length;
+    var cv = range / (mean || 0.001);
+
+    // Optimal BW = range × 4 (safety margin), min 0.02, max 0.30
+    var optBW = Math.max(range * 4, 0.02);
+    optBW = Math.min(optBW, 0.30);
+    // Round to nice value: 0.02, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30
+    var nice = [0.02, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30];
+    var best = 0.25;
+    for (var ni = 0; ni < nice.length; ni++) {
+      if (nice[ni] >= optBW) { best = nice[ni]; break; }
+    }
+
+    // Verify: with this BW, do all values land in same bin?
+    var bin0 = null;
+    var allSame = true;
+    for (var vi = 0; vi < values.length; vi++) {
+      var raw = values[vi] / best;
+      var frac = raw - Math.floor(raw);
+      var b = frac >= 0.80 ? Math.ceil(raw) : Math.floor(raw);
+      if (bin0 === null) bin0 = b;
+      else if (b !== bin0) allSame = false;
+    }
+
+    // If not all same, increase BW
+    if (!allSame) {
+      for (var ni2 = nice.indexOf(best) + 1; ni2 < nice.length; ni2++) {
+        var bw2 = nice[ni2];
+        var firstBin = null;
+        var ok = true;
+        for (var vi2 = 0; vi2 < values.length; vi2++) {
+          var raw2 = values[vi2] / bw2;
+          var frac2 = raw2 - Math.floor(raw2);
+          var b2 = frac2 >= 0.80 ? Math.ceil(raw2) : Math.floor(raw2);
+          if (firstBin === null) firstBin = b2;
+          else if (b2 !== firstBin) { ok = false; break; }
+        }
+        if (ok) { best = bw2; allSame = true; break; }
+      }
+    }
+
+    return {
+      id: featureId, is3D: is3D, values: values, mean: mean,
+      range: range, cv: cv, optBW: best, oldBW: is3D ? 0.25 : 0.25,
+      stable: allSame, bin: bin0,
+      improvement: (0.25 / best).toFixed(1) + 'x'
+    };
+  }
+
+  // Process 2D features
+  for (var k2d in allRaw2D) {
+    if (seen[k2d]) continue;
+    seen[k2d] = true;
+    var r = calcBW(k2d, allRaw2D[k2d], false);
+    if (r) bwResults.push(r);
+  }
+  // Process 3D features
+  for (var k3d in allRaw3D) {
+    if (seen[k3d]) continue;
+    seen[k3d] = true;
+    var r3 = calcBW(k3d, allRaw3D[k3d], true);
+    if (r3) bwResults.push(r3);
+  }
+
+  // Sort by improvement (biggest first)
+  bwResults.sort(function(a, b) { return parseFloat(b.improvement) - parseFloat(a.improvement); });
+
+  // Update PER_FEATURE_BW
+  for (var bi = 0; bi < bwResults.length; bi++) {
+    PER_FEATURE_BW[bwResults[bi].id] = bwResults[bi].optBW;
+  }
+  autoBWEnabled = true;
+
+  // ================================================================
+  // Verify: re-hash all rounds with adaptive BW
+  // ================================================================
+  // Re-compute hashes for each round using allRaw2D/allRaw3D + per-feature BW
+  var verifyHashes = [];
+  for (var vr = 0; vr < ROUNDS; vr++) {
+    var parts2d = [];
+    for (var vwi = 0; vwi < WHITELIST_RATIOS.length; vwi++) {
+      var vk = WHITELIST_RATIOS[vwi];
+      if (allRaw2D[vk] && allRaw2D[vk][vr] !== undefined) {
+        parts2d.push(vk + ':' + quantizeAdaptive(allRaw2D[vk][vr], vk, false));
+      }
+    }
+    var STABLE_3D_V = ['T01_temple_width','T03_cheek_jaw_ratio','E04_orbital_width_R','E05_intercanthal','N05_alar_width_3d','F05_face_side','G02_face_width_height','T02_temple_recess','T05_bizygomatic','E03_orbital_width_L','F04_bigonial'];
+    var parts3d = [];
+    for (var vsi = 0; vsi < STABLE_3D_V.length; vsi++) {
+      var vfk = STABLE_3D_V[vsi];
+      if (allRaw3D[vfk] && allRaw3D[vfk][vr] !== undefined) {
+        parts3d.push(vfk + ':' + quantizeAdaptive(allRaw3D[vfk][vr], vfk, true));
+      }
+    }
+    var h2d = await sha256hex(parts2d.join('|'));
+    var h3d = await sha256hex(parts3d.join('|'));
+    var hc = await sha256hex(parts2d.join('|') + '||' + parts3d.join('|'));
+    verifyHashes.push({ h2d: h2d, h3d: h3d, hc: hc, p2d: parts2d, p3d: parts3d });
+  }
+
+  // Check stability
+  var stable2D = verifyHashes.every(function(h) { return h.h2d === verifyHashes[0].h2d; });
+  var stable3D = verifyHashes.every(function(h) { return h.h3d === verifyHashes[0].h3d; });
+  var stableComb = verifyHashes.every(function(h) { return h.hc === verifyHashes[0].hc; });
+
+  // ================================================================
+  // Display results
+  // ================================================================
+  var el = document.getElementById('multi-result');
+  el.style.display = 'block';
+
+  var html = '<div style="color:#10b981;font-weight:700;font-size:1.2em;margin-bottom:12px">'
+    + '⚙ Auto BW Calibration Result</div>';
+
+  // Stability verification
+  html += '<div style="border:2px solid ' + (stableComb ? '#0f0' : '#f44') + ';padding:10px;border-radius:8px;margin-bottom:12px">';
+  html += '<div style="font-weight:700;color:' + (stableComb ? '#0f0' : '#f44') + ';font-size:1.05em">'
+    + (stableComb ? '✅ All ' + ROUNDS + ' rounds produce IDENTICAL hash!' : '❌ Hash mismatch detected') + '</div>';
+  html += '<div style="margin-top:6px;font-size:.85em">'
+    + '2D: ' + (stable2D ? '✅' : '❌') + ' ' + verifyHashes[0].h2d.substring(0, 20) + '...<br>'
+    + '3D: ' + (stable3D ? '✅' : '❌') + ' ' + verifyHashes[0].h3d.substring(0, 20) + '...<br>'
+    + 'Combined: ' + (stableComb ? '✅' : '❌') + ' ' + verifyHashes[0].hc.substring(0, 20) + '...</div>';
+  html += '</div>';
+
+  // Per-feature BW table
+  html += '<div style="font-weight:700;color:#ffc107;margin-bottom:6px">Per-Feature Optimal Bin Width</div>';
+  html += '<table style="width:100%;font-size:.78em;border-collapse:collapse">';
+  html += '<tr style="border-bottom:1px solid #444"><th style="text-align:left">Feature</th>'
+    + '<th>Type</th><th>Mean</th><th>Range</th><th>Old BW</th><th>New BW</th>'
+    + '<th>Improve</th><th>Stable</th><th>Bins (R1-R' + ROUNDS + ')</th></tr>';
+
+  for (var ri = 0; ri < bwResults.length; ri++) {
+    var bwr = bwResults[ri];
+    var improved = bwr.optBW < bwr.oldBW;
+    var binStrs = [];
+    for (var bvi = 0; bvi < bwr.values.length; bvi++) {
+      binStrs.push(quantizeAdaptive(bwr.values[bvi], bwr.id, bwr.is3D));
+    }
+    var binsAllSame = binStrs.every(function(b) { return b === binStrs[0]; });
+
+    html += '<tr style="border-bottom:1px solid #333;color:' + (improved ? '#0f0' : '#888') + '">'
+      + '<td style="color:#ffc107">' + bwr.id + '</td>'
+      + '<td>' + (bwr.is3D ? '3D' : '2D') + '</td>'
+      + '<td>' + bwr.mean.toFixed(3) + '</td>'
+      + '<td>' + bwr.range.toFixed(4) + '</td>'
+      + '<td style="color:#888">0.25</td>'
+      + '<td style="color:' + (improved ? '#0f0' : '#888') + ';font-weight:700">' + bwr.optBW.toFixed(2) + '</td>'
+      + '<td style="color:' + (improved ? '#0f0' : '#888') + '">' + bwr.improvement + '</td>'
+      + '<td>' + (binsAllSame ? '✅' : '❌') + '</td>'
+      + '<td>' + binStrs.join(', ') + '</td>'
+      + '</tr>';
+  }
+  html += '</table>';
+
+  // Summary statistics
+  var improved2D = bwResults.filter(function(r) { return !r.is3D && r.optBW < 0.25; }).length;
+  var improved3D = bwResults.filter(function(r) { return r.is3D && r.optBW < 0.25; }).length;
+  var total2D = bwResults.filter(function(r) { return !r.is3D; }).length;
+  var total3D = bwResults.filter(function(r) { return r.is3D; }).length;
+  var avgImprove = 0;
+  for (var ai = 0; ai < bwResults.length; ai++) avgImprove += parseFloat(bwResults[ai].improvement);
+  avgImprove /= bwResults.length;
+
+  // Calculate discriminative power
+  var totalBins = 1;
+  for (var dpi = 0; dpi < bwResults.length; dpi++) {
+    // Estimate possible bins for this feature: typical range / BW
+    var possibleBins = Math.max(3, Math.ceil(0.5 / bwResults[dpi].optBW));
+    totalBins *= possibleBins;
+  }
+
+  html += '<div style="margin-top:12px;padding:10px;border:1px solid #10b981;border-radius:8px">';
+  html += '<div style="font-weight:700;color:#10b981;font-size:1em">Summary</div>';
+  html += '<div style="font-size:.85em;margin-top:4px">'
+    + '2D: ' + improved2D + '/' + total2D + ' features improved<br>'
+    + '3D: ' + improved3D + '/' + total3D + ' features improved<br>'
+    + 'Avg resolution improvement: <b style="color:#0f0">' + avgImprove.toFixed(1) + 'x</b><br>'
+    + 'Old discriminative power: 5<sup>36</sup> ≈ 10<sup>25</sup><br>'
+    + 'New discriminative power: ~10<sup>' + Math.round(Math.log10(totalBins)) + '</sup> (estimated)'
+    + '</div>';
+  html += '</div>';
+
+  // Show per-feature BW as code for SDK
+  html += '<div style="margin-top:12px;padding:10px;background:#1a1a2e;border-radius:8px">';
+  html += '<div style="font-weight:700;color:#06b6d4;font-size:.85em;margin-bottom:4px">SDK Config (copy to structuralId.ts)</div>';
+  html += '<pre style="font-size:.7em;color:#aaa;overflow-x:auto;white-space:pre-wrap">';
+  html += 'const PER_FEATURE_BW: Record&lt;string, number&gt; = {\n';
+  for (var ci = 0; ci < bwResults.length; ci++) {
+    html += '  \'' + bwResults[ci].id + '\': ' + bwResults[ci].optBW.toFixed(2) + ',\n';
+  }
+  html += '};\n';
+  html += '</pre></div>';
+
+  el.innerHTML = html;
+
+  st('⚙ Auto BW complete — ' + bwResults.filter(function(r) { return r.optBW < 0.25; }).length
+    + '/' + bwResults.length + ' features improved, avg ' + avgImprove.toFixed(1) + 'x resolution', 'ok');
+  enableButtons();
+}
+window.doAutoBW = doAutoBW;
 
 // ============================================================
 // PIN BEHAVIOR FINGERPRINT TEST
