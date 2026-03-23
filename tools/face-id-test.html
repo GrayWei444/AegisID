@@ -1226,17 +1226,16 @@ function computeDepthRatios(model) {
   // T01: 太陽穴寬 3D
   ratios.T01_temple_width = d3n(templeL, templeR);
 
-  // T02: 太陽穴凹陷 — 太陽穴 Z vs 顴骨 Z
-  var templeZ = (templeL.z + templeR.z) / 2;
-  var cheekZ = (cheekL.z + cheekR.z) / 2;
-  ratios.T02_temple_recess = Math.abs(templeZ - cheekZ);
+  // T02: 太陽穴到顴骨 3D 距離（左右平均）— 比純 Z 差值穩定
+  ratios.T02_temple_recess = (d3n(templeL, cheekL) + d3n(templeR, cheekR)) / 2;
 
   // T03: 顴骨寬 vs 下顎寬（臉部錐度）
   var bigonial = d3n(jawL, jawR);
   ratios.T03_cheek_jaw_ratio = bizygomatic / (bigonial || 0.01);
 
-  // T04: 顴骨突出度 — 顴骨 Z vs 眼窩平面 Z
-  ratios.T04_cheekbone_proj = Math.abs(cheekZ - eyePlaneZ);
+  // T04: 顴骨突出度 — 顴骨到眼窩平面的 3D 距離（左右平均）
+  var cheekMid = avgPt(cheekL, cheekR);
+  ratios.T04_cheekbone_proj = d3n(cheekMid, eyeMid);
 
   // T05: 顴骨間距 3D
   ratios.T05_bizygomatic = bizygomatic;
