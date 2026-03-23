@@ -99,6 +99,11 @@ export interface UseFaceRecognitionOptions {
   matchThreshold?: number;
   /** 自動登入閾值（verify 模式），default 0.85 */
   autoLoginThreshold?: number;
+  /**
+   * 影片測試模式：提供 mp4 URL 時，用影片檔代替攝影機。
+   * Anti-spoof 自動跳過（螢幕回放會誤判）。
+   */
+  videoUrl?: string;
 }
 
 export interface VerifyFaceResult {
@@ -146,6 +151,7 @@ export function useFaceRecognition({
   mode,
   matchThreshold = LOGIN_MATCH_THRESHOLD,
   autoLoginThreshold = 0.85,
+  videoUrl,
 }: UseFaceRecognitionOptions): UseFaceRecognitionReturn {
   const [status, setStatus] = useState<FaceDetectionStatus>('idle');
   const [currentChallenge, setCurrentChallenge] = useState<LivenessChallenge | null>(null);
@@ -168,6 +174,7 @@ export function useFaceRecognition({
   const activeDetectorRef = useRef<ActiveLivenessDetector | null>(null);
   const passiveDetectorRef = useRef<PassiveLivenessDetector | null>(null);
   const isRunningRef = useRef(false);
+  const isVideoModeRef = useRef(!!videoUrl);
   const lastTimestampRef = useRef(0);
   const statusRef = useRef<FaceDetectionStatus>('idle');
 
@@ -202,44 +209,66 @@ export function useFaceRecognition({
 
       // Reset bbox smoothing for new session
       resetBboxSmoothing();
+      isVideoModeRef.current = !!videoUrl;
 
-      // 先啟動相機 + MediaPipe（必須），CNN 在背景載入（不阻塞相機啟動）
-      const [cameraResult, mediapipeResult] = await Promise.allSettled([
-        navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-        }),
-        initFaceLandmarker(),
-      ]);
+      if (videoUrl) {
+        // === 影片測試模式 ===
+        devLog('[FaceRec] VIDEO TEST MODE — loading:', videoUrl);
 
-      // 相機是必須的
-      if (cameraResult.status === 'rejected') {
-        const err = cameraResult.reason as { name?: string; message?: string } | undefined;
-        console.error('[FaceRec] Camera getUserMedia REJECTED:', err?.name, err?.message);
-        throw cameraResult.reason;
-      }
-      // MediaPipe 是必須的
-      if (mediapipeResult.status === 'rejected') {
-        throw mediapipeResult.reason;
-      }
+        // MediaPipe 仍然必須
+        await initFaceLandmarker();
 
-      // Anti-spoof 模型在背景載入（612KB，不阻塞相機啟動）
-      if (!isCnnReady()) {
-        initCnnModels().then(() => {
-          setCnnReady(true);
-          devLog('[FaceRec] Anti-spoof model ready (background)');
-        }).catch((err) => {
-          devWarn('[FaceRec] Anti-spoof model failed to load:', err);
-        });
-      } else {
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.src = videoUrl;
+          videoRef.current.muted = true;
+          videoRef.current.playsInline = true;
+          videoRef.current.loop = false;
+          await videoRef.current.play();
+          devLog('[FaceRec] Video playing, duration:', videoRef.current.duration?.toFixed(1) + 's');
+        }
+
+        // 影片模式跳過 anti-spoof（螢幕回放會誤判）
         setCnnReady(true);
-        devLog('[FaceRec] Anti-spoof model already cached');
-      }
+        devLog('[FaceRec] Anti-spoof SKIPPED in video test mode');
 
-      const stream = cameraResult.value as MediaStream;
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+      } else {
+        // === 正常相機模式 ===
+        const [cameraResult, mediapipeResult] = await Promise.allSettled([
+          navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          }),
+          initFaceLandmarker(),
+        ]);
+
+        if (cameraResult.status === 'rejected') {
+          const err = cameraResult.reason as { name?: string; message?: string } | undefined;
+          console.error('[FaceRec] Camera getUserMedia REJECTED:', err?.name, err?.message);
+          throw cameraResult.reason;
+        }
+        if (mediapipeResult.status === 'rejected') {
+          throw mediapipeResult.reason;
+        }
+
+        // Anti-spoof 模型在背景載入
+        if (!isCnnReady()) {
+          initCnnModels().then(() => {
+            setCnnReady(true);
+            devLog('[FaceRec] Anti-spoof model ready (background)');
+          }).catch((err) => {
+            devWarn('[FaceRec] Anti-spoof model failed to load:', err);
+          });
+        } else {
+          setCnnReady(true);
+          devLog('[FaceRec] Anti-spoof model already cached');
+        }
+
+        const stream = cameraResult.value as MediaStream;
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
       }
 
       // 初始化活體偵測器
@@ -260,7 +289,7 @@ export function useFaceRecognition({
       devWarn('[FaceRec] Camera/model init failed:', err);
       setStatusAndRef('error');
     }
-  }, [mode]);
+  }, [mode, videoUrl]);
 
   const stopCamera = useCallback(() => {
     isRunningRef.current = false;
@@ -277,6 +306,10 @@ export function useFaceRecognition({
 
     if (videoRef.current) {
       videoRef.current.srcObject = null;
+      if (isVideoModeRef.current) {
+        videoRef.current.src = '';
+        videoRef.current.load();
+      }
     }
 
     devLog('[FaceRec] Camera stopped');
@@ -357,6 +390,9 @@ export function useFaceRecognition({
     geometry: ReturnType<typeof extractFaceGeometry>,
     now: number,
   ): Promise<void> => {
+    // 影片測試模式跳過 anti-spoof
+    if (isVideoModeRef.current) return;
+
     // Anti-spoof 未就緒 or 還在跑上一次 → 跳過
     if (!isCnnReady() || cnnRunningRef.current) return;
 

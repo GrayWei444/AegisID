@@ -58,18 +58,17 @@ class SameSourceCheckResponse(BaseModel):
 
 
 class AegisIdRegisterRequest(BaseModel):
-    """註冊身份錨點"""
-    face_lsh_hash: str = Field(..., min_length=16, max_length=64)
-    behavior_lsh_hash: str = Field(..., min_length=8, max_length=32)
+    """註冊身份錨點（v15 雙 hash 架構）"""
+    face_hash: str = Field(..., min_length=64, max_length=64)   # SHA-256(bone bins) — 限速
+    account_key: str = Field(..., min_length=64, max_length=64)  # SHA-256(face_hash + PIN) — 帳號唯一 key
     encrypted_blob: str = Field(..., min_length=1)
     blob_salt: str = Field(..., min_length=1)
     blob_iv: str = Field(..., min_length=1)
 
 
 class AegisIdLookupRequest(BaseModel):
-    """查找身份錨點"""
-    face_lsh_hash: str = Field(..., min_length=16, max_length=64)
-    behavior_lsh_hash: str = Field(default="", max_length=32)
+    """查找身份錨點（account_key exact match）"""
+    account_key: str = Field(..., min_length=64, max_length=64)  # SHA-256(face_hash + PIN)
 
 
 # ============================================
@@ -451,7 +450,8 @@ def create_aegisid_tables(cursor: sqlite3.Cursor) -> None:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS identity_anchors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            face_lsh_hash TEXT NOT NULL,
+            face_lsh_hash TEXT,
+            face_hash TEXT,
             face_seg_0 TEXT,
             face_seg_1 TEXT,
             face_seg_2 TEXT,
@@ -464,8 +464,18 @@ def create_aegisid_tables(cursor: sqlite3.Cursor) -> None:
             updated_at INTEGER DEFAULT (strftime('%s','now'))
         )
     """)
+
+    # Migration: add columns if not exists (must run BEFORE index creation)
+    for col in ["face_hash TEXT", "account_key TEXT"]:
+        try:
+            cursor.execute(f"ALTER TABLE identity_anchors ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_face_seg_0 ON identity_anchors(face_seg_0)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_face_seg_1 ON identity_anchors(face_seg_1)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_face_hash ON identity_anchors(face_hash)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_account_key ON identity_anchors(account_key)")
 
     # 註冊速率限制
     cursor.execute("""
@@ -678,11 +688,11 @@ def create_aegisid_router(
     @router.post("/aegisid/register")
     async def aegisid_register(req: Request, body: AegisIdRegisterRequest):
         """
-        註冊身份錨點
+        註冊身份錨點 (v15 雙 hash 架構)
 
-        - 接收 face LSH hash + behavior LSH hash + 加密的身份包
-        - Rate limiting: 同一 face/behavior 組合 48hr 內只能註冊一次
-        - VPS 永遠不知道原始生物特徵，只儲存 LSH hash
+        - face_hash = SHA-256(bone bins) → 限速（同臉限 ~2 帳號）
+        - account_key = SHA-256(face_hash + PIN) → 帳號唯一 key（O(1) 查表）
+        - encrypted_blob = AES-256-GCM 加密身份包
         """
         client_ip = get_real_client_ip(req)
         now = int(time.time())
@@ -691,19 +701,17 @@ def create_aegisid_router(
         with get_db() as conn:
             cursor = conn.cursor()
 
-            # Rate limiting: 用 HMAC 匿名化 face+behavior 組合
-            combo_raw = f"{body.face_lsh_hash}:{body.behavior_lsh_hash}"
-            combo_hmac = hmac.new(
-                api_secret.encode(), combo_raw.encode(), hashlib.sha256
+            # Rate limiting: face_hash 限速（同臉 48hr 限 2 次）
+            face_hmac = hmac.new(
+                api_secret.encode(), body.face_hash.encode(), hashlib.sha256
             ).hexdigest()
 
-            # 檢查 48hr 內是否已註冊
             cursor.execute("""
                 SELECT COUNT(*) FROM registration_rate_limits
-                WHERE dimension = 'combo' AND hmac_hash = ? AND created_at > ?
-            """, (combo_hmac, now - ttl))
-            if cursor.fetchone()[0] > 0:
-                raise HTTPException(status_code=429, detail="Already registered recently")
+                WHERE dimension = 'face' AND hmac_hash = ? AND created_at > ?
+            """, (face_hmac, now - ttl))
+            if cursor.fetchone()[0] >= 2:
+                raise HTTPException(status_code=429, detail="Same face registered too many times")
 
             # IP rate limiting: 每 IP 24hr 最多 5 次
             ip_hmac = hmac.new(
@@ -716,37 +724,46 @@ def create_aegisid_router(
             if cursor.fetchone()[0] >= 5:
                 raise HTTPException(status_code=429, detail="Too many registrations from this IP")
 
-            # 儲存身份錨點
-            face_hash = body.face_lsh_hash
-            seg_len = 8
-            segs = [
-                face_hash[i:i + seg_len] if i + seg_len <= len(face_hash) else None
-                for i in range(0, seg_len * 4, seg_len)
-            ]
-
+            # 檢查 account_key 是否已存在
             cursor.execute("""
-                INSERT INTO identity_anchors
-                (face_lsh_hash, face_seg_0, face_seg_1, face_seg_2, face_seg_3,
-                 behavior_lsh_hash, encrypted_blob, blob_salt, blob_iv)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                face_hash,
-                segs[0] if len(segs) > 0 else None,
-                segs[1] if len(segs) > 1 else None,
-                segs[2] if len(segs) > 2 else None,
-                segs[3] if len(segs) > 3 else None,
-                body.behavior_lsh_hash,
-                body.encrypted_blob,
-                body.blob_salt,
-                body.blob_iv,
-            ))
+                SELECT id FROM identity_anchors WHERE account_key = ?
+            """, (body.account_key,))
+            existing = cursor.fetchone()
 
-            anchor_id = cursor.lastrowid
+            if existing:
+                # 同帳號重新註冊 → 更新加密身份包
+                cursor.execute("""
+                    UPDATE identity_anchors
+                    SET encrypted_blob = ?, blob_salt = ?, blob_iv = ?,
+                        updated_at = strftime('%s','now')
+                    WHERE account_key = ?
+                """, (
+                    body.encrypted_blob,
+                    body.blob_salt,
+                    body.blob_iv,
+                    body.account_key,
+                ))
+                anchor_id = existing[0]
+            else:
+                # 新帳號
+                cursor.execute("""
+                    INSERT INTO identity_anchors
+                    (face_lsh_hash, face_hash, account_key,
+                     encrypted_blob, blob_salt, blob_iv)
+                    VALUES ('', ?, ?, ?, ?, ?)
+                """, (
+                    body.face_hash,
+                    body.account_key,
+                    body.encrypted_blob,
+                    body.blob_salt,
+                    body.blob_iv,
+                ))
+                anchor_id = cursor.lastrowid
 
             # 記錄 rate limit
             cursor.execute("""
-                INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('combo', ?)
-            """, (combo_hmac,))
+                INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('face', ?)
+            """, (face_hmac,))
             cursor.execute("""
                 INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('ip', ?)
             """, (ip_hmac,))
@@ -758,83 +775,32 @@ def create_aegisid_router(
     @router.post("/aegisid/lookup")
     async def aegisid_lookup(body: AegisIdLookupRequest):
         """
-        查找身份錨點
+        查找身份錨點 (account_key exact match)
 
-        - 用 face LSH hash 的前兩段做 bucket 篩選
-        - 對候選結果計算完整的 Hamming similarity
-        - 綜合分數 = 0.6 × face_sim + 0.4 × behavior_sim
-        - confidence ≥ 0.80 才返回加密的身份包
+        帳號恢復：3D 掃臉 + PIN → account_key = SHA-256(face_hash + PIN) → O(1) 查表
+        找到就返回加密身份包（客戶端用 PIN 解密）
         """
-        face_hash = body.face_lsh_hash
-        seg_len = 8
-        seg_0 = face_hash[:seg_len] if len(face_hash) >= seg_len else None
-        seg_1 = face_hash[seg_len:seg_len * 2] if len(face_hash) >= seg_len * 2 else None
-
         with get_db() as conn:
             cursor = conn.cursor()
 
-            # Bucket 查找：至少一個 segment 匹配
-            if seg_0 and seg_1:
-                cursor.execute("""
-                    SELECT id, face_lsh_hash, behavior_lsh_hash,
-                           encrypted_blob, blob_salt, blob_iv
-                    FROM identity_anchors
-                    WHERE face_seg_0 = ? OR face_seg_1 = ?
-                    ORDER BY updated_at DESC LIMIT 50
-                """, (seg_0, seg_1))
-            elif seg_0:
-                cursor.execute("""
-                    SELECT id, face_lsh_hash, behavior_lsh_hash,
-                           encrypted_blob, blob_salt, blob_iv
-                    FROM identity_anchors
-                    WHERE face_seg_0 = ?
-                    ORDER BY updated_at DESC LIMIT 50
-                """, (seg_0,))
-            else:
-                return {"found": False, "confidence": 0.0}
+            cursor.execute("""
+                SELECT id, encrypted_blob, blob_salt, blob_iv
+                FROM identity_anchors
+                WHERE account_key = ?
+                LIMIT 1
+            """, (body.account_key,))
 
-            candidates = cursor.fetchall()
+            row = cursor.fetchone()
 
-        if not candidates:
+        if not row:
             return {"found": False, "confidence": 0.0}
 
-        # 對每個候選計算相似度
-        best_match = None
-        best_score = 0.0
-
-        for row in candidates:
-            cand_face = row[1]
-            cand_behavior = row[2]
-
-            face_sim = _hex_hamming_similarity(face_hash, cand_face)
-
-            # 行為相似度（如果提供了 behavior hash）
-            behavior_sim = 0.5  # 預設中性
-            if body.behavior_lsh_hash and cand_behavior:
-                behavior_sim = _hex_hamming_similarity(
-                    body.behavior_lsh_hash, cand_behavior
-                )
-
-            # 綜合分數
-            score = 0.6 * face_sim + 0.4 * behavior_sim
-
-            if score > best_score:
-                best_score = score
-                best_match = row
-
-        # 只有 confidence ≥ 0.80 才返回加密包
-        if best_match and best_score >= 0.80:
-            return {
-                "found": True,
-                "confidence": round(best_score, 4),
-                "encrypted_blob": best_match[3],
-                "blob_salt": best_match[4],
-                "blob_iv": best_match[5],
-            }
-
         return {
-            "found": False,
-            "confidence": round(best_score, 4) if best_score > 0 else 0.0,
+            "found": True,
+            "confidence": 1.0,
+            "encrypted_blob": row["encrypted_blob"],
+            "blob_salt": row["blob_salt"],
+            "blob_iv": row["blob_iv"],
         }
 
     return router

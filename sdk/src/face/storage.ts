@@ -12,7 +12,7 @@
 
 import * as db from '../database';
 import { devLog, devWarn } from '../utils/devLog';
-import type { FaceEmbedding, StoredFaceEmbedding } from './types';
+import type { FaceEmbedding, StoredFaceEmbedding, StoredBoneRatioData, BoneRatioPlainData } from './types';
 
 // ============================================================================
 // Constants
@@ -225,4 +225,98 @@ export async function restoreFaceEmbedding(
     devWarn('[FaceStorage] SQLite restore failed:', e);
   });
   devLog('[FaceStorage] Restored face embedding from transfer');
+}
+
+// ============================================================================
+// Bone Ratio Storage (structuralId 骨骼比率系統)
+// ============================================================================
+
+const BONE_RATIO_KEY = 'aegis_face_bone_ratio';
+
+/**
+ * 儲存加密的骨骼比率資料（dual-write: localStorage + SQLite）
+ *
+ * @param data 骨骼比率明文資料（frontalBins + hash）
+ * @param encryptionKey 來自 keyEncryption.deriveEncryptionKey() 的 CryptoKey
+ */
+export async function saveBoneRatioData(
+  data: BoneRatioPlainData,
+  encryptionKey: CryptoKey
+): Promise<void> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(data));
+
+  const ciphertextBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    encryptionKey,
+    plaintext.buffer as ArrayBuffer
+  );
+
+  const stored: StoredBoneRatioData = {
+    ciphertext: bytesToBase64(new Uint8Array(ciphertextBuf)),
+    iv: bytesToBase64(iv),
+    timestamp: Date.now(),
+    source: 'bone-ratio',
+  };
+
+  const json = JSON.stringify(stored);
+
+  // Dual-write
+  localStorage.setItem(BONE_RATIO_KEY, json);
+  db.setSetting(BONE_RATIO_KEY, json).catch((e) => {
+    devWarn('[FaceStorage] SQLite bone ratio write failed:', e);
+  });
+
+  // 同步更新 hasFaceEnrolled 的 key
+  localStorage.setItem(STORAGE_KEY, json);
+  db.setSetting(STORAGE_KEY, json).catch(() => {});
+
+  devLog('[FaceStorage] Saved encrypted bone ratio data, bins:', Object.keys(data.frontalBins).length);
+}
+
+/**
+ * 讀取並解密骨骼比率資料
+ *
+ * @returns BoneRatioPlainData 或 null（未註冊）
+ */
+export async function getBoneRatioData(
+  encryptionKey: CryptoKey
+): Promise<BoneRatioPlainData | null> {
+  // Try localStorage first (fast), fallback to SQLite
+  let json = localStorage.getItem(BONE_RATIO_KEY);
+  if (!json) {
+    try {
+      json = await db.getSetting(BONE_RATIO_KEY) ?? null;
+    } catch (e) {
+      devWarn('[FaceStorage] SQLite bone ratio read failed:', e);
+    }
+  }
+
+  if (!json) return null;
+
+  try {
+    const stored: StoredBoneRatioData = JSON.parse(json);
+    const iv = base64ToBytes(stored.iv);
+    const ciphertext = base64ToBytes(stored.ciphertext);
+
+    const plaintextBuf = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+      encryptionKey,
+      ciphertext.buffer as ArrayBuffer
+    );
+
+    const data: BoneRatioPlainData = JSON.parse(new TextDecoder().decode(plaintextBuf));
+
+    // Ensure dual-write consistency
+    if (!localStorage.getItem(BONE_RATIO_KEY)) {
+      localStorage.setItem(BONE_RATIO_KEY, json);
+    }
+    db.setSetting(BONE_RATIO_KEY, json).catch(() => {});
+
+    devLog('[FaceStorage] Loaded bone ratio data, bins:', Object.keys(data.frontalBins).length);
+    return data;
+  } catch (e) {
+    devWarn('[FaceStorage] Bone ratio decryption failed:', e);
+    return null;
+  }
 }

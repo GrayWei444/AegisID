@@ -7,7 +7,7 @@
 
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { devLog } from '../utils/devLog';
-import type { FaceLandmark, FaceGeometry } from './types';
+import type { FaceLandmark, FaceGeometry, FaceDetectionResult } from './types';
 
 // ============================================================================
 // Singleton Instance
@@ -44,13 +44,13 @@ export async function initFaceLandmarker(): Promise<FaceLandmarker> {
             'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
           delegate: 'GPU',
         },
-        runningMode: 'VIDEO',
+        runningMode: 'IMAGE',
         numFaces: 1,
         minFaceDetectionConfidence: 0.5,
         minFacePresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
         outputFaceBlendshapes: false,
-        outputFacialTransformationMatrixes: false,
+        outputFacialTransformationMatrixes: true,
       });
 
       const elapsed = Date.now() - startTime;
@@ -84,24 +84,49 @@ export function isFaceLandmarkerInitializing(): boolean {
 // ============================================================================
 
 /**
- * 從 video frame 偵測臉部 landmarks
+ * 從 video frame 偵測臉部 landmarks + transformation matrix
  *
- * @returns 468 個 landmark 座標，或 null（未偵測到人臉）
+ * @returns landmarks + matrix + yaw，或 null（未偵測到人臉）
  */
 export function detectFace(
   video: HTMLVideoElement,
   timestampMs: number
-): FaceLandmark[] | null {
+): FaceDetectionResult | null {
   if (!landmarkerInstance) return null;
 
-  const result = landmarkerInstance.detectForVideo(video, timestampMs);
+  const result = landmarkerInstance.detect(video);
 
   if (!result.faceLandmarks || result.faceLandmarks.length === 0) {
     return null;
   }
 
-  // 取第一個偵測到的人臉
-  return result.faceLandmarks[0] as FaceLandmark[];
+  const landmarks = result.faceLandmarks[0] as FaceLandmark[];
+
+  // 從 transformation matrix 提取資料
+  let matrix: { data: number[] } | undefined;
+
+  if (
+    result.facialTransformationMatrixes &&
+    result.facialTransformationMatrixes.length > 0
+  ) {
+    const mat = result.facialTransformationMatrixes[0];
+    const matData = mat.data ? Array.from(mat.data as Iterable<number>) : [];
+    if (matData.length >= 16) {
+      matrix = { data: matData };
+    }
+  }
+
+  // Yaw 用 landmark 幾何計算（與測試工具一致，比 rotation matrix 更穩定）
+  // yaw = (nose.x - eyeMidX) / eyeSpan
+  const leX = (landmarks[33].x + landmarks[133].x) / 2;
+  const reX = (landmarks[263].x + landmarks[362].x) / 2;
+  const eyeMidX = (leX + reX) / 2;
+  const eyeSpan = Math.abs(reX - leX);
+  const yaw = eyeSpan > 0.01
+    ? (landmarks[1].x - eyeMidX) / eyeSpan
+    : 0;
+
+  return { landmarks, matrix, yaw };
 }
 
 // ============================================================================

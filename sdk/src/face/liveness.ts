@@ -21,10 +21,12 @@ import type {
 const THRESHOLDS = {
   /** EAR 低於此值 = 閉眼 */
   BLINK_EAR: 0.18,
-  /** 鼻子偏移超過此值 = 轉頭 */
-  HEAD_TURN_OFFSET: 0.12,
-  /** 每個主動挑戰超時 (ms) */
-  ACTIVE_CHALLENGE_TIMEOUT: 8000,
+  /** 鼻子偏移超過此值 = 確定轉頭（左右方向） */
+  HEAD_TURN_OFFSET: 0.18,
+  /** 回正判定：偏移低於此值 = 已回正 */
+  HEAD_CENTER_OFFSET: 0.06,
+  /** 每個主動挑戰超時 (ms) — 3D 掃描需要更長時間 */
+  ACTIVE_CHALLENGE_TIMEOUT: 12000,
   /** 被動偵測需要的最少眨眼次數 */
   PASSIVE_MIN_BLINKS: 1,
   /** 被動偵測需要的最少微動量 */
@@ -40,8 +42,12 @@ const THRESHOLDS = {
 /**
  * 主動活體偵測器
  *
- * 註冊時使用：依序要求使用者眨眼、轉頭（Face ID 風格）
- * 每個動作有 8 秒超時
+ * 註冊時使用（Apple Face ID 風格 3D 掃描）：
+ *   1. 眨眼（活體確認）
+ *   2. 慢速左右掃描（一次完成：右轉 → 左轉 → 回正）
+ *
+ * 持續錄影收集 CapturedFrame[]（每 100ms 一幀），
+ * 供 structuralId.ts 的 build3DModel() 建立精確的 3D 骨骼模型
  */
 export class ActiveLivenessDetector {
   private challenges: LivenessChallenge[] = ['blink', 'turn_head'];
@@ -49,7 +55,8 @@ export class ActiveLivenessDetector {
   private challengeStartTime = 0;
   private completed: Map<LivenessChallenge, LivenessChallengeStatus> = new Map();
   private wasEyesClosed = false;
-  private wasHeadTurned = false;
+  /** 掃描狀態機：idle → turned_right → turned_left → done */
+  private scanPhase: 'idle' | 'turned_right' | 'turned_left' = 'idle';
   /** Phase 26b: 挑戰期間 embedding 快照 */
   private snapshots: ChallengeEmbeddingSnapshot[] = [];
 
@@ -62,7 +69,7 @@ export class ActiveLivenessDetector {
     this.currentIndex = 0;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
-    this.wasHeadTurned = false;
+    this.scanPhase = 'idle';
     this.snapshots = [];
     this.completed = new Map([
       ['blink', 'waiting'],
@@ -97,10 +104,10 @@ export class ActiveLivenessDetector {
     }
 
     const avgEAR = (geometry.leftEAR + geometry.rightEAR) / 2;
+    const noseX = geometry.noseOffsetX;
 
     switch (challenge) {
       case 'blink': {
-        // 偵測眨眼：EAR 先下降到閾值以下，再回復
         if (avgEAR < THRESHOLDS.BLINK_EAR) {
           this.wasEyesClosed = true;
         } else if (this.wasEyesClosed && avgEAR >= THRESHOLDS.BLINK_EAR) {
@@ -111,18 +118,32 @@ export class ActiveLivenessDetector {
         break;
       }
 
-      case 'turn_head': {
-        // 偵測轉頭：鼻子偏移超過閾值，再回正
-        if (Math.abs(geometry.noseOffsetX) > THRESHOLDS.HEAD_TURN_OFFSET) {
-          this.wasHeadTurned = true;
-        } else if (this.wasHeadTurned && Math.abs(geometry.noseOffsetX) <= THRESHOLDS.HEAD_TURN_OFFSET) {
-          devLog('[Liveness] Head turn detected');
-          this.completed.set('turn_head', 'detected');
-          this.advanceChallenge();
+      case 'turn_head':
+      case 'turn_right':
+      case 'turn_left': {
+        // 一次慢速掃描：右轉 → 左轉 → 回正（一氣呵成）
+        if (this.scanPhase === 'idle') {
+          // 等待右轉到位
+          if (noseX > THRESHOLDS.HEAD_TURN_OFFSET) {
+            this.scanPhase = 'turned_right';
+            devLog('[Liveness] Scan: right reached, noseX:', noseX.toFixed(3));
+          }
+        } else if (this.scanPhase === 'turned_right') {
+          // 等待左轉到位（從右直接轉到左，不需要先回正）
+          if (noseX < -THRESHOLDS.HEAD_TURN_OFFSET) {
+            this.scanPhase = 'turned_left';
+            devLog('[Liveness] Scan: left reached, noseX:', noseX.toFixed(3));
+          }
+        } else if (this.scanPhase === 'turned_left') {
+          // 等待回正
+          if (Math.abs(noseX) < THRESHOLDS.HEAD_CENTER_OFFSET) {
+            devLog('[Liveness] Scan complete — returned to center');
+            this.completed.set(challenge, 'detected');
+            this.advanceChallenge();
+          }
         }
         break;
       }
-
     }
 
     return this.currentIndex >= this.challenges.length;
@@ -133,7 +154,7 @@ export class ActiveLivenessDetector {
     this.currentIndex++;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
-    this.wasHeadTurned = false;
+    this.scanPhase = 'idle';
   }
 
   // =========================================================================
@@ -157,7 +178,7 @@ export class ActiveLivenessDetector {
     const status = this.completed.get(challenge);
     if (status === 'waiting') {
       // 挑戰尚未偵測到動作
-      return this.wasEyesClosed || this.wasHeadTurned ? 'during' : 'before';
+      return this.wasEyesClosed || this.scanPhase !== 'idle' ? 'during' : 'before';
     }
     return 'after';
   }

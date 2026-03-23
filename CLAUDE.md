@@ -21,6 +21,16 @@
 - 修改任何檔案前先 read_file 確認內容
 - 參考 ROADMAP.md 確認當前 Phase
 
+### 0.4 VPS 部署鐵律 ⚠️
+
+**絕對不能直接修改 VPS 上的檔案。所有修改必須 repo → commit → push → 再 deploy。**
+
+- ❌ 直接 SSH 到 VPS 修改程式碼
+- ❌ Deploy 前沒有 commit + push
+- ✅ 改 repo 原始碼 → git commit → git push → scp 到 VPS → restart
+
+事故記錄：2026-03-22 shortcode、2026-03-23 push/blacklist，VPS 直接寫的程式碼被 deploy 覆蓋導致功能中斷。
+
 ---
 
 ## 1. 專案概述

@@ -1,14 +1,17 @@
 /**
  * Identity Anchor Service
  *
- * Upload Face LSH + PIN behavior LSH to VPS as identity anchor.
- * VPS only stores LSH hashes (irreversible) for cross-device identity verification.
+ * AegisID SDK 內部完整處理身份錨點註冊：
+ *   face_hash = SHA-256(25 bone bins)        → VPS 限速（同臉限 ~2 帳號）
+ *   account_key = SHA-256(face_hash + PIN)   → VPS 帳號唯一 key（O(1) 查表）
+ *   encrypted_blob = AES-256-GCM(identity, PIN) → VPS 存儲加密身份包
+ *
+ * AegisTalk 只需呼叫 registerIdentityAnchor({ faceHash, pin, publicKey, displayName })
  *
  * Core principle: know it's the same person, but not who they are.
  */
 
-import { computeFaceLSHHash, computePinLSHHash } from '../lsh';
-import type { PinBehaviorFingerprint } from '../behavior';
+import { computeAccountKey } from '../face/structuralId';
 import { encryptWithPin, decryptWithPin } from '../auth/pinHash';
 
 // ============================================================================
@@ -52,20 +55,25 @@ export interface LookupResult {
 /**
  * Register identity anchor
  *
- * Called after registration (PIN + Face enrolled).
- * Non-blocking, fails silently.
+ * SDK 內部完成所有計算：
+ *   1. account_key = SHA-256(face_hash + PIN)
+ *   2. 加密身份包 (AES-256-GCM + Argon2id)
+ *   3. 上傳 VPS: face_hash (限速) + account_key (查表) + encrypted_blob
+ *
+ * @param faceHash SHA-256 from computeStructuralId() — 骨骼比率唯一 ID
+ * @param pin 使用者的 PIN 碼（純數字）
+ * @param publicKey 通訊用公鑰
+ * @param displayName 顯示名稱
  */
 export async function registerIdentityAnchor(params: {
-  faceEmbedding: Float32Array;
-  pinFingerprint: PinBehaviorFingerprint;
+  faceHash: string;
+  pin: string;
   publicKey: string;
   displayName: string;
-  pin: string;
 }): Promise<RegisterResult> {
   try {
-    // 1. Compute LSH hashes
-    const faceLSH = computeFaceLSHHash(params.faceEmbedding);
-    const pinLSH = computePinLSHHash(params.pinFingerprint);
+    // 1. Compute account_key = SHA-256(face_hash + PIN)
+    const accountKey = await computeAccountKey(params.faceHash, params.pin);
 
     // 2. Encrypt identity blob with PIN (AES-256-GCM + Argon2id)
     const blob: IdentityBlob = {
@@ -80,8 +88,8 @@ export async function registerIdentityAnchor(params: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        face_lsh_hash: faceLSH.hexHash,
-        behavior_lsh_hash: pinLSH.hexHash,
+        face_hash: params.faceHash,
+        account_key: accountKey,
         encrypted_blob: encrypted,
         blob_salt: salt,
         blob_iv: iv,
@@ -103,25 +111,23 @@ export async function registerIdentityAnchor(params: {
 /**
  * Lookup identity anchor (cross-device recovery)
  *
- * New device: face scan + PIN → query VPS for matching identity anchor.
- * Returns encrypted blob if confidence ≥ 0.80.
+ * 新裝置：3D 掃臉 + PIN → account_key → VPS O(1) 查表
+ *
+ * @param faceHash SHA-256 from computeStructuralId()
+ * @param pin 使用者輸入的 PIN
  */
 export async function lookupIdentityAnchor(params: {
-  faceEmbedding: Float32Array;
-  pinFingerprint?: PinBehaviorFingerprint;
+  faceHash: string;
+  pin: string;
 }): Promise<LookupResult> {
   try {
-    const faceLSH = computeFaceLSHHash(params.faceEmbedding);
-    const pinLSH = params.pinFingerprint
-      ? computePinLSHHash(params.pinFingerprint)
-      : null;
+    const accountKey = await computeAccountKey(params.faceHash, params.pin);
 
     const response = await fetch(`${_apiBaseUrl}/aegisid/lookup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        face_lsh_hash: faceLSH.hexHash,
-        behavior_lsh_hash: pinLSH?.hexHash ?? '',
+        account_key: accountKey,
       }),
     });
 
