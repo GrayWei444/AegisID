@@ -162,6 +162,7 @@ button.verify{background:#ffc107;color:#000}
     <button id="b-pin-multi" onclick="doPinMultiTest()" style="background:#e91e63;color:#fff">&#9000; PIN Reg&times;2</button>
     <button id="b-touch-test" onclick="doTouchTest()" style="background:#06b6d4;color:#fff">&#9757; Touch Test</button>
     <button onclick="doSwipeTest()" style="background:#0ea5e9;color:#fff">⬆ Swipe Test</button>
+    <button id="b-cnn-stab" onclick="doCnnStability()" disabled style="background:#06b6d4;color:#000">&#128300; CNN Test</button>
     <button id="b-clear" onclick="doClear()" disabled>&#128465; Clear</button>
     <button onclick="document.getElementById('log').style.display=document.getElementById('log').style.display==='none'?'block':'none'">&#128203; Log</button>
   </div>
@@ -472,66 +473,80 @@ var RATIO_KEYS = [
 ];
 
 function boneRatios(lm) {
-  // v15: ALL denominators use IPD (interpupillary distance) — pure orbital bone
-  // IPD = lm[33] → lm[263], unaffected by weight change
-  // fw/fh retained only for legacy ratios (not in whitelist)
-  var fw = d2(lm[234], lm[454]), fh = d2(lm[10], lm[152]), ipd = d2(lm[33], lm[263]);
-  if (fw < .01 || fh < .01 || ipd < .01) return null;
+  // v17: 多基準最佳化 — CNN 穩定性測試結果：
+  //   Brow outer (lm70-300): CV=0.21% ← 最穩定
+  //   Face height (lm10-152): CV=0.24%
+  //   IPD+brow avg: CV=0.24%
+  //   IPD outer (lm33-263): CV=0.28%
+  //   IPD inner (lm133-362): CV=1.22% ← 最差，不用
+  //
+  // 策略：
+  //   垂直距離 → 用 fh (face height, CV=0.24%)
+  //   水平距離 → 用 brow outer (CV=0.21%) 或 IPD+brow avg (CV=0.24%)
+  //   自比率（同類距離相除）→ 不需要基準，最穩定
+
+  var fw = d2(lm[234], lm[454]);
+  var fh = d2(lm[10], lm[152]);                // face height — 垂直基準 (CV=0.24%)
+  var ipd = d2(lm[33], lm[263]);               // IPD outer
+  var browW = d2(lm[70], lm[300]);             // brow outer — 水平基準 (CV=0.21%)
+  var ref = (ipd + browW) / 2;                 // IPD+brow avg — 綜合基準 (CV=0.24%)
+
+  if (fw < .01 || fh < .01 || ipd < .01 || browW < .01) return null;
 
   var leC = mid(lm[33], lm[133]), reC = mid(lm[263], lm[362]);
   var eyeMid = mid(leC, reC);
 
   var r = {};
   // === F: Face proportions ===
-  r.F01 = ipd / fw;                                       // legacy (fw affected by fat)
-  r.F02 = d2(lm[10], eyeMid) / ipd;                      // v15: forehead→eyeMid / IPD
-  r.F03 = d2(eyeMid, lm[2]) / ipd;                       // v15: eyeMid→nose / IPD (was /fh)
-  r.F04 = d2(lm[2], lm[152]) / fh;                       // legacy (chin)
-  r.F05 = d2(lm[234], lm[1]) / d2(lm[1], lm[454]);      // face asymmetry
-  r.F06 = d2(lm[10], eyeMid) / d2(lm[2], lm[152]);      // upper/lower ratio
-  r.F07 = Math.abs(lm[1].x - eyeMid.x) / ipd;           // nose offset
+  r.F01 = ipd / fw;                                       // legacy
+  r.F02 = d2(lm[10], eyeMid) / fh;                       // forehead / face height (垂直/垂直)
+  r.F03 = d2(eyeMid, lm[2]) / fh;                        // midface / face height (垂直/垂直)
+  r.F04 = d2(lm[2], lm[152]) / fh;                       // chin / face height
+  r.F05 = d2(lm[234], lm[1]) / d2(lm[1], lm[454]);      // face asymmetry (自比率)
+  r.F06 = d2(lm[10], eyeMid) / d2(lm[2], lm[152]);      // upper/lower (自比率)
+  r.F07 = Math.abs(lm[1].x - eyeMid.x) / ref;           // nose offset / ref
 
   // === EL: Left eye (bone-only) ===
-  r.EL01 = d2(lm[33], lm[133]) / d2(lm[159], lm[145]); // eye W/H
-  r.EL02 = d2(lm[133], leC) / d2(lm[33], leC);          // inner/outer half ratio
-  r.EL03 = d2(lm[133], lm[6]) / ipd;                     // inner corner→nasion / IPD
-  r.EL04 = d2(leC, lm[1]) / ipd;                         // v15: eyeC→nose / IPD (was /fh)
-  r.EL05 = d2(lm[159], lm[145]) / ipd;                   // eye height / IPD
-  r.EL06 = d2(lm[33], lm[133]) / ipd;                    // v15: eye width / IPD (was /fw)
-  r.EL07 = d2(lm[159], lm[66]) / d2(lm[159], lm[145]);  // brow-eye ratio
-  r.EL08 = d2(leC, lm[6]) / ipd;                         // v15: eyeC→nasion / IPD (was mouth lm[61])
+  r.EL01 = d2(lm[33], lm[133]) / d2(lm[159], lm[145]); // eye W/H (自比率)
+  r.EL02 = d2(lm[133], leC) / d2(lm[33], leC);          // inner/outer half (自比率)
+  r.EL03 = d2(lm[133], lm[6]) / ref;                     // inner corner→nasion / ref
+  r.EL04 = d2(leC, lm[1]) / fh;                          // eyeC→nose / fh (垂直)
+  r.EL05 = d2(lm[159], lm[145]) / ref;                   // eye height / ref
+  r.EL06 = d2(lm[33], lm[133]) / ref;                    // eye width / ref (水平/水平)
+  r.EL07 = d2(lm[159], lm[66]) / d2(lm[159], lm[145]);  // brow-eye (自比率)
+  r.EL08 = d2(leC, lm[6]) / ref;                         // eyeC→nasion / ref
 
   // === ER: Right eye (bone-only) ===
-  r.ER01 = d2(lm[263], lm[362]) / d2(lm[386], lm[374]); // eye W/H
-  r.ER02 = d2(lm[362], reC) / d2(lm[263], reC);          // inner/outer half ratio
-  r.ER03 = d2(lm[362], lm[6]) / ipd;                     // inner corner→nasion / IPD
-  r.ER04 = d2(reC, lm[1]) / ipd;                         // v15: eyeC→nose / IPD (was /fh)
-  r.ER05 = d2(lm[386], lm[374]) / ipd;                   // eye height / IPD
-  r.ER06 = d2(lm[263], lm[362]) / ipd;                   // v15: eye width / IPD (was /fw)
-  r.ER07 = d2(lm[386], lm[296]) / d2(lm[386], lm[374]); // brow-eye ratio
-  r.ER08 = d2(reC, lm[6]) / ipd;                         // v15: eyeC→nasion / IPD (was mouth lm[291])
+  r.ER01 = d2(lm[263], lm[362]) / d2(lm[386], lm[374]); // eye W/H (自比率)
+  r.ER02 = d2(lm[362], reC) / d2(lm[263], reC);          // inner/outer half (自比率)
+  r.ER03 = d2(lm[362], lm[6]) / ref;                     // inner corner→nasion / ref
+  r.ER04 = d2(reC, lm[1]) / fh;                          // eyeC→nose / fh (垂直)
+  r.ER05 = d2(lm[386], lm[374]) / ref;                   // eye height / ref
+  r.ER06 = d2(lm[263], lm[362]) / ref;                   // eye width / ref (水平/水平)
+  r.ER07 = d2(lm[386], lm[296]) / d2(lm[386], lm[374]); // brow-eye (自比率)
+  r.ER08 = d2(reC, lm[6]) / ref;                         // eyeC→nasion / ref
 
   // === B: Eyebrows (bone-only) ===
-  r.B01 = d2(lm[66], eyeMid) / ipd;                      // v15: L brow→eyeMid / IPD (was /fh)
-  r.B02 = d2(lm[296], eyeMid) / ipd;                     // v15: R brow→eyeMid / IPD (was /fh)
-  r.B03 = d2(lm[66], eyeMid) / d2(lm[296], eyeMid);     // brow symmetry
-  r.B04 = d2(lm[105], lm[334]) / ipd;                    // inner brow span / IPD
-  r.B05 = d2(lm[70], lm[300]) / ipd;                     // v15: outer brow span / IPD (was /fw)
-  r.B06 = d2(lm[70], lm[105]) / ipd;                     // L brow length / IPD
-  r.B07 = d2(lm[300], lm[334]) / ipd;                    // R brow length / IPD
-  r.B08 = d2(lm[70], lm[105]) / d2(lm[300], lm[334]);   // L/R brow symmetry
+  r.B01 = d2(lm[66], eyeMid) / fh;                       // L brow→eyeMid / fh (垂直)
+  r.B02 = d2(lm[296], eyeMid) / fh;                      // R brow→eyeMid / fh
+  r.B03 = d2(lm[66], eyeMid) / d2(lm[296], eyeMid);     // brow symmetry (自比率)
+  r.B04 = d2(lm[105], lm[334]) / ref;                    // inner brow span / ref (水平)
+  r.B05 = d2(lm[70], lm[300]) / ref;                     // outer brow span / ref (水平)
+  r.B06 = d2(lm[70], lm[105]) / ref;                     // L brow length / ref
+  r.B07 = d2(lm[300], lm[334]) / ref;                    // R brow length / ref
+  r.B08 = d2(lm[70], lm[105]) / d2(lm[300], lm[334]);   // L/R brow symmetry (自比率)
 
-  // === N: Nose (bone + cartilage, stable) ===
-  r.N01 = d2(lm[48], lm[278]) / ipd;                     // nose alar width / IPD
-  r.N02 = d2(lm[6], lm[2]) / ipd;                        // v15: nose bridge length / IPD (was /fh)
-  r.N03 = d2(lm[6], lm[4]) / d2(lm[6], lm[2]);          // bridge-to-tip ratio
-  r.N04 = d2(lm[98], lm[327]) / d2(lm[48], lm[278]);    // nostril outer/inner ratio
-  r.N05 = d2(lm[48], lm[6]) / ipd;                       // v15: L alar→nasion / IPD (was mouth lm[61])
-  r.N06 = d2(lm[1], lm[48]) / d2(lm[1], lm[278]);       // nose tip asymmetry
-  r.N07 = d2(lm[48], lm[278]) / d2(lm[6], lm[2]);       // width/length ratio
-  r.N08 = d2(lm[6], lm[10]) / ipd;                       // v15: nasion→forehead / IPD (was /fh)
-  r.N09 = d2(lm[1], lm[0]) / d2(lm[6], lm[2]);          // nose tip→lip / nose length
-  r.N10 = d2(lm[4], lm[2]) / ipd;                        // v15: nose tip→subnasal / IPD (was chin)
+  // === N: Nose (bone + cartilage) ===
+  r.N01 = d2(lm[48], lm[278]) / ref;                     // alar width / ref (水平)
+  r.N02 = d2(lm[6], lm[2]) / fh;                         // nose bridge / fh (垂直)
+  r.N03 = d2(lm[6], lm[4]) / d2(lm[6], lm[2]);          // bridge-to-tip (自比率)
+  r.N04 = d2(lm[98], lm[327]) / d2(lm[48], lm[278]);    // nostril ratio (自比率)
+  r.N05 = d2(lm[48], lm[6]) / ref;                       // L alar→nasion / ref
+  r.N06 = d2(lm[1], lm[48]) / d2(lm[1], lm[278]);       // nose tip asymmetry (自比率)
+  r.N07 = d2(lm[48], lm[278]) / d2(lm[6], lm[2]);       // width/length (自比率)
+  r.N08 = d2(lm[6], lm[10]) / fh;                        // nasion→forehead / fh (垂直)
+  r.N09 = d2(lm[1], lm[0]) / d2(lm[6], lm[2]);          // tip→lip / nose (自比率)
+  r.N10 = d2(lm[4], lm[2]) / fh;                         // tip→subnasal / fh (垂直)
 
   // === M: Mouth — legacy (soft tissue, NOT in v15 whitelist) ===
   r.M01 = d2(lm[61], lm[291]) / fw;
@@ -575,10 +590,47 @@ var BIN_WIDTH = 0.25;
 var BOUNDARY_MARGIN = 0.25;
 var CONSISTENCY_THRESHOLD = 0.80;
 
-// Quantization: round() instead of floor()
-// floor() boundaries at 0.00, 0.10, 0.20, ... — our drifters cluster here
-// round() boundaries at 0.05, 0.15, 0.25, ... — shifted by half bin, avoids clustering
-function quantize(v) { return Math.round(v / BIN_WIDTH); }
+/**
+ * Stable quantization — 邊界緩衝區機制
+ *
+ * round(v / BW) 的邊界在 N×BW + BW/2（例如 0.125, 0.375, 0.625...）
+ * 當值在邊界附近（±margin）時，微小變動會跳 bin
+ *
+ * 解法：邊界緩衝區 — 如果值在邊界 ± margin 內，
+ * 向 bin 中心「吸附」（snap to center），消除邊界抖動
+ */
+/**
+ * 穩定量化 — 邊界寬緩衝區
+ *
+ * round() 邊界在 N + 0.5（例如 2.5 × BW = 0.625）
+ * 緩衝區：|frac - 0.5| < 0.15 時一律 floor（偏向下方 bin）
+ * 這意味著值在 bin 的 35%~65% 區間內都用 floor
+ * 只有值在 65%~100% 時才 round up
+ *
+ * 效果：N03 的 0.623 (frac=0.49) 和 0.655 (frac=0.62) 都落在 bin 2
+ */
+/**
+ * floor-biased quantization
+ * 只有 frac ≥ 0.80 才進位到下一個 bin
+ * 等效於 bin 邊界從 0.5 移到 0.8（大幅減少邊界跳動）
+ *
+ * 測試驗證：
+ *   N03: 0.623→bin2, 0.655→bin2, 0.673→bin2 ✅
+ *   T05: 1.610→bin6, 1.638→bin6 ✅
+ */
+function quantize(v) {
+  var raw = v / BIN_WIDTH;
+  var frac = raw - Math.floor(raw);
+  if (frac >= 0.80) return Math.ceil(raw);
+  return Math.floor(raw);
+}
+
+function quantize3D(v, bw) {
+  var raw = v / bw;
+  var frac = raw - Math.floor(raw);
+  if (frac >= 0.80) return Math.ceil(raw);
+  return Math.floor(raw);
+}
 
 // v15: Exclude all fat-affected ratios (jaw, chin, mouth soft tissue)
 // Also exclude eyelid-opening ratios (EL01/ER01 W/H) and unstable asymmetry ratios
@@ -1087,71 +1139,206 @@ function buildTrue3DModel(frames) {
 }
 
 /**
- * 計算深度比率 — 只有真 3D 才能測量的比率
+ * 完整 3D 特徵計算 — 6 大類 25+ 特徵
  * 所有值已 IPD 歸一化（IPD = 1.0）
+ *
+ * G: Global face shape（整體臉型）
+ * T: Temple & cheekbone（太陽穴+顴骨輪廓）
+ * E: Eye orbital（眼窩深度結構）
+ * N: Nasal 3D（鼻部 3D 結構）
+ * F: Forehead & chin（額頭+下巴弧度）
+ * A: Asymmetry（非對稱性）
  */
 function computeDepthRatios(model) {
   var m = model;
 
-  // 輔助：兩點間 3D 距離（已 IPD 歸一化）
   function d3n(a, b) {
-    return Math.sqrt(Math.pow(a.x-b.x,2) + Math.pow(a.y-b.y,2) + Math.pow(a.z-b.z,2));
+    return Math.sqrt(Math.pow(a.x-b.x,2)+Math.pow(a.y-b.y,2)+Math.pow(a.z-b.z,2));
+  }
+  function avgZ() {
+    var s = 0;
+    for (var i = 0; i < arguments.length; i++) s += arguments[i].z;
+    return s / arguments.length;
+  }
+  function avgPt() {
+    var sx=0,sy=0,sz=0,n=arguments.length;
+    for (var i = 0; i < n; i++) { sx+=arguments[i].x; sy+=arguments[i].y; sz+=arguments[i].z; }
+    return {x:sx/n, y:sy/n, z:sz/n};
   }
 
-  // 參考平面：用眼窩外角定義（骨骼固定點）
-  var eyeL = m[33], eyeR = m[263];
-  var eyePlaneZ = (eyeL.z + eyeR.z) / 2;
+  // 關鍵參考點
+  var eyeL = m[33], eyeR = m[263];         // 眼窩外角
+  var eyeInL = m[133], eyeInR = m[362];    // 眼窩內角
+  var eyePlaneZ = (eyeL.z + eyeR.z) / 2;   // 眼窩平面 Z
+  var eyeMid = avgPt(eyeL, eyeR);
 
-  // 耳朵平面（臉部最側面）
-  var earL = m[234], earR = m[454];
+  var earL = m[234], earR = m[454];         // 臉部最側面
   var earPlaneZ = (earL.z + earR.z) / 2;
 
-  // 顴骨
-  var cheekL = m[93], cheekR = m[323];
+  var cheekL = m[93], cheekR = m[323];      // 顴骨
+  var browL = m[66], browR = m[296];        // 眉峰
+  var browInL = m[105], browInR = m[334];   // 眉頭
+
+  var forehead = m[10];                     // 額頭中心
+  var foreheadL = m[54], foreheadR = m[284]; // 額頭兩側
+  var chin = m[152];                        // 下巴尖
+  var jawL = m[132], jawR = m[361];         // 下顎角
+
+  var noseTip = m[1];                       // 鼻尖
+  var nasion = m[6];                        // 鼻樑根部
+  var noseBridge = m[4];                    // 鼻樑中段
+  var subnasale = m[2];                     // 鼻下點
+  var alarL = m[48], alarR = m[278];        // 鼻翼
+
+  var lipTop = m[0];                        // 上唇中心
+  var mouthL = m[61], mouthR = m[291];      // 嘴角
+
+  // 太陽穴 — lm[127] (右太陽穴), lm[356] (左太陽穴)
+  var templeL = m[127], templeR = m[356];
 
   var ratios = {};
 
-  // D01: 鼻尖凸出 — 鼻尖(lm[1]) 相對於眼窩平面
-  ratios.D01_nose_protrusion = Math.abs(m[1].z - eyePlaneZ);
+  // ==========================================================
+  // G: Global Face Shape（整體臉型）
+  // ==========================================================
 
-  // D02: 鼻樑深度 — nasion(lm[6]) 相對於眼窩平面
-  ratios.D02_nasion_depth = Math.abs(m[6].z - eyePlaneZ);
+  // G01: 臉寬深比 — 顴骨寬 / 臉部深度（鼻尖到耳朵）
+  var bizygomatic = d3n(cheekL, cheekR);
+  var faceDepth = Math.abs(noseTip.z - earPlaneZ);
+  ratios.G01_face_width_depth = bizygomatic / (faceDepth || 0.01);
 
-  // D03: 眼窩凹陷 — 眉骨(lm[66]+lm[296]) 相對於眼窩外角
-  // 眉骨在眼窩外角前面 → 正值 = 眼窩凹陷
-  var browL = m[66], browR = m[296];
+  // G02: 臉寬高比 3D — 顴骨寬 / 臉高 3D
+  var faceHeight3D = d3n(forehead, chin);
+  ratios.G02_face_width_height = bizygomatic / (faceHeight3D || 0.01);
+
+  // G03: 上臉 vs 下臉 — 額頭到眼 / 眼到下巴
+  var upperFace = d3n(forehead, eyeMid);
+  var lowerFace = d3n(eyeMid, chin);
+  ratios.G03_upper_lower_face = upperFace / (lowerFace || 0.01);
+
+  // G04: 臉部深度 / IPD（整體立體度）
+  ratios.G04_face_depth = faceDepth;
+
+  // ==========================================================
+  // T: Temple & Cheekbone（太陽穴+顴骨輪廓）
+  // ==========================================================
+
+  // T01: 太陽穴寬 3D
+  ratios.T01_temple_width = d3n(templeL, templeR);
+
+  // T02: 太陽穴凹陷 — 太陽穴 Z vs 顴骨 Z
+  var templeZ = (templeL.z + templeR.z) / 2;
+  var cheekZ = (cheekL.z + cheekR.z) / 2;
+  ratios.T02_temple_recess = Math.abs(templeZ - cheekZ);
+
+  // T03: 顴骨寬 vs 下顎寬（臉部錐度）
+  var bigonial = d3n(jawL, jawR);
+  ratios.T03_cheek_jaw_ratio = bizygomatic / (bigonial || 0.01);
+
+  // T04: 顴骨突出度 — 顴骨 Z vs 眼窩平面 Z
+  ratios.T04_cheekbone_proj = Math.abs(cheekZ - eyePlaneZ);
+
+  // T05: 顴骨間距 3D
+  ratios.T05_bizygomatic = bizygomatic;
+
+  // ==========================================================
+  // E: Eye Orbital（眼窩深度結構）
+  // ==========================================================
+
+  // E01: 眼窩深度 — 眉骨 vs 眼窩外角
   var browZ = (browL.z + browR.z) / 2;
-  ratios.D03_orbital_depth = Math.abs(browZ - eyePlaneZ);
+  ratios.E01_orbital_depth = Math.abs(browZ - eyePlaneZ);
 
-  // D04: 顴骨突出 — 顴骨(lm[93]+lm[323]) 相對於眼窩平面
-  // 顴骨通常比眼窩更突出（Z 更小/更前面）
-  ratios.D04_cheekbone = Math.abs((cheekL.z + cheekR.z)/2 - eyePlaneZ);
+  // E02: 眉骨凸出 — 眉骨 vs 額頭
+  ratios.E02_brow_ridge = Math.abs(browZ - forehead.z);
 
-  // D05: 額頭弧度 — 額頭中心(lm[10]) vs 額頭兩側(lm[54]+lm[284]) 的 Z 差
-  var forehead = m[10], foreheadL = m[54], foreheadR = m[284];
-  ratios.D05_forehead_curve = Math.abs(forehead.z - (foreheadL.z + foreheadR.z)/2);
+  // E03: 左眼窩寬 3D
+  ratios.E03_orbital_width_L = d3n(eyeL, eyeInL);
 
-  // D06: 下巴突出 — 下巴(lm[152]) 相對於眼窩平面
-  var chin = m[152];
-  ratios.D06_chin_protrusion = Math.abs(chin.z - eyePlaneZ);
+  // E04: 右眼窩寬 3D
+  ratios.E04_orbital_width_R = d3n(eyeR, eyeInR);
 
-  // D07: 鼻子長度 3D（nasion lm[6] → 鼻下 lm[2]，含深度）
-  ratios.D07_nose_length_3d = d3n(m[6], m[2]);
+  // E05: 內眼角間距 3D
+  ratios.E05_intercanthal = d3n(eyeInL, eyeInR);
 
-  // D08: 眼窩內角到鼻樑 3D（lm[133] → lm[6]）
-  ratios.D08_orbital_nasion_3d = d3n(m[133], m[6]);
+  // E06: 眼窩到鼻樑 3D（左）
+  ratios.E06_orbital_nasion_L = d3n(eyeInL, nasion);
 
-  // D09: 臉部側面深度 — 顴骨到耳朵的 3D 距離（左右平均）
-  ratios.D09_face_side_depth = (d3n(cheekL, earL) + d3n(cheekR, earR)) / 2;
+  // E07: 眼窩到鼻樑 3D（右）
+  ratios.E07_orbital_nasion_R = d3n(eyeInR, nasion);
 
-  // D10: 鼻翼寬度 3D（lm[48] → lm[278]）
-  ratios.D10_alar_width_3d = d3n(m[48], m[278]);
+  // ==========================================================
+  // N: Nasal 3D Structure（鼻部 3D 結構）
+  // ==========================================================
 
-  // D11: 臉部整體深度 — 鼻尖到耳朵平面
-  ratios.D11_face_depth = Math.abs(m[1].z - earPlaneZ);
+  // N01: 鼻尖凸出 — 鼻尖 Z vs 眼窩平面
+  ratios.N01_nose_protrusion = Math.abs(noseTip.z - eyePlaneZ);
 
-  // D12: 顴骨間距 3D（lm[93] → lm[323]）
-  ratios.D12_bizygomatic_3d = d3n(cheekL, cheekR);
+  // N02: 鼻樑深度 — nasion Z vs 眼窩平面
+  ratios.N02_nasion_depth = Math.abs(nasion.z - eyePlaneZ);
+
+  // N03: 鼻樑弧度 — bridge(lm[4]) 偏離 nasion→tip 直線的距離
+  // 直鼻 ≈ 0，鷹鉤鼻 > 0，朝天鼻 < 0
+  var nasionToTip = vecSub([subnasale.x,subnasale.y,subnasale.z],[nasion.x,nasion.y,nasion.z]);
+  var nasionToBridge = vecSub([noseBridge.x,noseBridge.y,noseBridge.z],[nasion.x,nasion.y,nasion.z]);
+  var ntLen = vecLen(nasionToTip);
+  if (ntLen > 0.001) {
+    var ntDir = vecScale(nasionToTip, 1/ntLen);
+    var projLen = vecDot(nasionToBridge, ntDir);
+    var projPt = vecScale(ntDir, projLen);
+    var deviation = vecLen(vecSub(nasionToBridge, projPt));
+    ratios.N03_bridge_curvature = deviation;
+  } else {
+    ratios.N03_bridge_curvature = 0;
+  }
+
+  // N04: 鼻子長度 3D（nasion → subnasale）
+  ratios.N04_nose_length_3d = d3n(nasion, subnasale);
+
+  // N05: 鼻翼寬 3D
+  ratios.N05_alar_width_3d = d3n(alarL, alarR);
+
+  // N06: 鼻尖到上唇深度差
+  ratios.N06_nose_lip_depth = Math.abs(noseTip.z - lipTop.z);
+
+  // N07: 鼻翼角度 — 鼻翼相對於鼻樑的 3D 張角
+  var alarMid = avgPt(alarL, alarR);
+  ratios.N07_alar_angle = d3n(alarMid, nasion);
+
+  // ==========================================================
+  // F: Forehead & Chin（額頭+下巴弧度）
+  // ==========================================================
+
+  // F01: 額頭弧度 — 額頭中心 vs 兩側 Z 差
+  ratios.F01_forehead_curve = Math.abs(forehead.z - (foreheadL.z + foreheadR.z)/2);
+
+  // F02: 下巴突出 — 下巴 Z vs 眼窩平面
+  ratios.F02_chin_protrusion = Math.abs(chin.z - eyePlaneZ);
+
+  // F03: 下顎角度 3D — 下巴到下顎角的 3D 距離（左右平均）
+  ratios.F03_jaw_angle = (d3n(chin, jawL) + d3n(chin, jawR)) / 2;
+
+  // F04: 下顎寬 3D
+  ratios.F04_bigonial = bigonial;
+
+  // F05: 臉側深度 — 顴骨到耳朵 3D（左右平均）
+  ratios.F05_face_side = (d3n(cheekL, earL) + d3n(cheekR, earR)) / 2;
+
+  // ==========================================================
+  // A: Asymmetry（非對稱性 — 每個人獨有）
+  // ==========================================================
+
+  // A01: 顴骨 Z 不對稱
+  ratios.A01_cheek_asymm = Math.abs(cheekL.z - cheekR.z);
+
+  // A02: 眼窩深度不對稱
+  ratios.A02_orbital_asymm = Math.abs((browL.z - eyeL.z) - (browR.z - eyeR.z));
+
+  // A03: 下顎不對稱
+  ratios.A03_jaw_asymm = Math.abs(d3n(chin, jawL) - d3n(chin, jawR));
+
+  // A04: 嘴角不對稱 3D
+  ratios.A04_mouth_asymm = Math.abs(d3n(noseTip, mouthL) - d3n(noseTip, mouthR));
 
   return ratios;
 }
@@ -1241,7 +1428,7 @@ function draw3DFace(model, canvasId, rotY, rotX) {
     return {
       px: offX + (pts[idx].x - minX) * scale,
       py: offY + (pts[idx].y - minY) * scale,
-      depth: 1 - (pts[idx].z - minZ) / rangeZ  // invert: nose (minZ) = near (red)
+      depth: (pts[idx].z - minZ) / rangeZ  // large Z = nose (near) = will be colored red
     };
   }
 
@@ -1433,12 +1620,14 @@ function pcRedraw() {
   for (var i = 0; i < pts.length; i++) indices.push(i);
   indices.sort(function(a, b) { return pts[a].z - pts[b].z; });
 
-  // Draw points (support RGB mode for dense point cloud)
+  // Draw points (depth colormap: large Z = near = red)
   var isDenseMode = model[0] && model[0].isDense;
   for (var ii = 0; ii < indices.length; ii++) {
     var idx = indices[ii];
     var p = proj(idx);
-    var t = 1 - p.depth; // invert: near = red
+    // depth = 0 (minZ) → 1 (maxZ)
+    // 三角測量的模型：大 Z = 鼻尖（近）= 紅色
+    var t = p.depth; // large Z → t=1 → red (near)
     var cr, cg, cb;
     if (isDenseMode && model[idx].r !== undefined) {
       cr = model[idx].r; cg = model[idx].g; cb = model[idx].b;
@@ -1446,7 +1635,7 @@ function pcRedraw() {
       var c = jetColor(t);
       cr = c[0]; cg = c[1]; cb = c[2];
     }
-    var r = isDenseMode ? ptSize * 0.7 : ptSize * (0.5 + t * 0.8);
+    var r = ptSize * (0.5 + t * 0.8);
 
     ctx.beginPath();
     ctx.arc(p.px, p.py, r, 0, Math.PI * 2);
@@ -1694,13 +1883,23 @@ function updateYawUI(yaw, zoneCounts) {
   var ccEl = document.getElementById('yc-center');
   var rcEl = document.getElementById('yc-right');
 
-  lcEl.textContent = '\u2190 Left: ' + leftCount;
-  ccEl.textContent = 'Center: ' + centerCount + ' | Total: ' + totalCount;
-  rcEl.textContent = 'Right: ' + rightCount + ' \u2192';
+  // 5 zone 分別顯示
+  var zMin = [8, 8, 15, 8, 8];
+  var zNames = ['FL', 'L', 'C', 'R', 'FR'];
+  var parts = [];
+  for (var zi2 = 0; zi2 < 5; zi2++) {
+    var zc = zoneCounts[zi2] || 0;
+    var ok = zc >= zMin[zi2];
+    parts.push('<span style="color:' + (ok ? '#0f0' : '#f44') + '">' + zNames[zi2] + ':' + zc + '/' + zMin[zi2] + '</span>');
+  }
 
-  lcEl.className = leftCount >= 6 ? 'full' : '';
-  ccEl.className = centerCount >= 6 ? 'full' : '';
-  rcEl.className = rightCount >= 6 ? 'full' : '';
+  lcEl.innerHTML = parts[0] + ' ' + parts[1];
+  ccEl.innerHTML = parts[2] + ' | Total: ' + totalCount;
+  rcEl.innerHTML = parts[3] + ' ' + parts[4];
+
+  lcEl.className = (zoneCounts[0]||0) >= zMin[0] && (zoneCounts[1]||0) >= zMin[1] ? 'full' : '';
+  ccEl.className = (zoneCounts[2]||0) >= zMin[2] ? 'full' : '';
+  rcEl.className = (zoneCounts[3]||0) >= zMin[3] && (zoneCounts[4]||0) >= zMin[4] ? 'full' : '';
 }
 
 function addYawDot(yaw, color) {
@@ -2643,16 +2842,38 @@ async function doTriangulate3D() {
     updateYawUI(yaw, rawZoneCounts);
     addYawDot(yaw, YAW_ZONES[zone].color);
 
+    // 5 zone 最低要求
+    var ZONE_MIN = [8, 8, 15, 8, 8]; // far-L, L, center, R, far-R
+    var ZONE_NAMES = ['Far-Left (80\u00b0)', 'Left (40\u00b0)', 'Center', 'Right (40\u00b0)', 'Far-Right (80\u00b0)'];
+
+    // 找缺少的 zone
+    var missingZones = [];
+    for (var zi = 0; zi < 5; zi++) {
+      if (rawZoneCounts[zi] < ZONE_MIN[zi]) {
+        missingZones.push({ zone: zi, name: ZONE_NAMES[zi], have: rawZoneCounts[zi], need: ZONE_MIN[zi] });
+      }
+    }
+
     var fps = (allFrames.length / (elapsed / 1000)).toFixed(1);
-    document.getElementById('yaw-title').textContent =
-      '\u25B2 ' + allFrames.length + ' frames (' + (elapsed/1000).toFixed(1) + 's, ' + fps + ' FPS)';
 
-    // 時間到 + 覆蓋足夠
-    var lT = rawZoneCounts[0] + rawZoneCounts[1];
-    var rT = rawZoneCounts[3] + rawZoneCounts[4];
-    if (elapsed >= 4000 && rawZoneCounts[2] >= 10 && lT >= 8 && rT >= 8 && elapsed >= SCAN_DURATION) break;
+    if (missingZones.length > 0) {
+      // 提示使用者轉向缺少的角度
+      var hint = missingZones[0]; // 最優先的缺少 zone
+      var arrow = hint.zone <= 1 ? '\u2B05 Turn LEFT' : hint.zone >= 3 ? '\u27A1 Turn RIGHT' : '\uD83D\uDC41 Look STRAIGHT';
+      document.getElementById('yaw-title').innerHTML =
+        '<span style="color:#ffc107">' + arrow + ' \u2014 ' + hint.name + '</span>'
+        + ' <span style="color:#888">(' + hint.have + '/' + hint.need + ')</span>'
+        + ' <span style="color:#555">| ' + allFrames.length + ' frames</span>';
+    } else {
+      document.getElementById('yaw-title').textContent =
+        '\u2705 All zones OK! ' + allFrames.length + ' frames (' + fps + ' FPS)';
+    }
 
-    await sleep(5); // 極短等待，盡量高幀率
+    // 結束條件：所有 zone 都達標
+    var allZonesOk = missingZones.length === 0;
+    if (elapsed >= 4000 && allZonesOk) break;
+
+    await sleep(5);
   }
 
   var totalFrames = allFrames.length;
@@ -2660,12 +2881,28 @@ async function doTriangulate3D() {
   var fps2 = (totalFrames / parseFloat(scanTime)).toFixed(1);
 
   lg('[Tri3D] Total: ' + totalFrames + ' frames in ' + scanTime + 's (' + fps2 + ' FPS)');
-  lg('[Tri3D] Zones: FL=' + rawZoneCounts[0] + ' L=' + rawZoneCounts[1]
-    + ' C=' + rawZoneCounts[2] + ' R=' + rawZoneCounts[3] + ' FR=' + rawZoneCounts[4]
+  lg('[Tri3D] Zones: FL=' + rawZoneCounts[0] + '/' + ZONE_MIN[0]
+    + ' L=' + rawZoneCounts[1] + '/' + ZONE_MIN[1]
+    + ' C=' + rawZoneCounts[2] + '/' + ZONE_MIN[2]
+    + ' R=' + rawZoneCounts[3] + '/' + ZONE_MIN[3]
+    + ' FR=' + rawZoneCounts[4] + '/' + ZONE_MIN[4]
     + ' | No-face: ' + noFaceFrames);
 
-  if (totalFrames < 20) {
-    st('Not enough frames: ' + totalFrames + '. Need at least 20.', 'er');
+  // 檢查是否所有 zone 都達標
+  var failedZones = [];
+  for (var fzi = 0; fzi < 5; fzi++) {
+    if (rawZoneCounts[fzi] < ZONE_MIN[fzi]) {
+      failedZones.push(ZONE_NAMES[fzi] + ' (' + rawZoneCounts[fzi] + '/' + ZONE_MIN[fzi] + ')');
+    }
+  }
+  if (failedZones.length > 0) {
+    st('Scan incomplete! Missing: ' + failedZones.join(', ') + '. Turn head more slowly.', 'er');
+    enableButtons();
+    return;
+  }
+
+  if (totalFrames < 30) {
+    st('Not enough frames: ' + totalFrames + '. Need at least 30.', 'er');
     enableButtons();
     return;
   }
@@ -2698,44 +2935,151 @@ async function doTriangulate3D() {
   var rgbPx = rgbImgData.data;
   var vw = vid.videoWidth, vh = vid.videoHeight;
 
-  // 為每個 3D 點上色（用第一幀的 landmark 2D 位置取色）
+  // 為 468 個 3D 點上色（用第一幀的 landmark 2D 位置取色）
   var coloredModel = [];
-  for (var ci = 0; ci < result.model.length; ci++) {
+  var mdl = result.model;
+
+  for (var ci = 0; ci < mdl.length; ci++) {
     var lmPt = firstFrame.landmarks[ci];
-    var px = Math.round(lmPt.x * vw);
-    var py = Math.round(lmPt.y * vh);
-    px = Math.max(0, Math.min(vw - 1, px));
-    py = Math.max(0, Math.min(vh - 1, py));
-    var pIdx = (py * vw + px) * 4;
+    var lpx = Math.round(lmPt.x * vw);
+    var lpy = Math.round(lmPt.y * vh);
+    lpx = Math.max(0, Math.min(vw - 1, lpx));
+    lpy = Math.max(0, Math.min(vh - 1, lpy));
+    var lpIdx = (lpy * vw + lpx) * 4;
 
     coloredModel.push({
-      x: result.model[ci].x,
-      y: result.model[ci].y,
-      z: result.model[ci].z,
-      r: rgbPx[pIdx], g: rgbPx[pIdx + 1], b: rgbPx[pIdx + 2],
-      isDense: true
+      x: mdl[ci].x, y: mdl[ci].y, z: mdl[ci].z
     });
   }
 
   // ================================================================
-  // Phase 4: 視覺化
+  // Phase 4: 2D ID（正面幀 median bone ratios）
+  // ================================================================
+  st('\u25B2 Computing 2D + 3D IDs...', 'ld');
+  await sleep(20);
+
+  // 取最接近正面的 5 幀，計算 2D bone ratios median
+  // 嚴格正面篩選：|yaw| < 0.05 AND pitch 合理
+  // 正面越多越好 — 全部拿來取 median 最穩定
+  var centerFrames = allFrames.filter(function(f) {
+    if (Math.abs(f.yaw) >= 0.05) return false;
+    // pitch 檢查：鼻尖 Y 在臉部 45~55% 位置（不抬頭不低頭）
+    var noseY = f.landmarks[1].y;
+    var topY = f.landmarks[10].y;
+    var botY = f.landmarks[152].y;
+    var noseRatio = (noseY - topY) / (botY - topY);
+    return noseRatio > 0.42 && noseRatio < 0.58;
+  });
+
+  // 如果嚴格條件不夠，放寬 yaw 到 0.08
+  if (centerFrames.length < 8) {
+    centerFrames = allFrames.filter(function(f) { return Math.abs(f.yaw) < 0.08; });
+  }
+
+  // 按 |yaw| 排序，取前 20 幀（越多越穩定）
+  centerFrames.sort(function(a, b) { return Math.abs(a.yaw) - Math.abs(b.yaw); });
+  var nearFrontal = centerFrames.slice(0, Math.min(20, centerFrames.length));
+
+  lg('[2D] Strict frontal: ' + centerFrames.length + ' frames passed, using ' + nearFrontal.length);
+  if (nearFrontal.length > 0) {
+    lg('[2D] Yaw range: ' + Math.abs(nearFrontal[0].yaw).toFixed(4) + ' ~ ' + Math.abs(nearFrontal[nearFrontal.length-1].yaw).toFixed(4));
+  }
+
+  var frontalRatioSets = [];
+  for (var fri = 0; fri < nearFrontal.length; fri++) {
+    var fRatios = boneRatios(nearFrontal[fri].landmarks);
+    if (fRatios) frontalRatioSets.push(fRatios);
+  }
+
+  var bins2D = {};
+  var rawValues2D = {};
+  if (frontalRatioSets.length >= 2) {
+    for (var wi = 0; wi < WHITELIST_RATIOS.length; wi++) {
+      var k = WHITELIST_RATIOS[wi];
+      var vals = [];
+      for (var si = 0; si < frontalRatioSets.length; si++) {
+        if (frontalRatioSets[si][k] !== undefined) vals.push(frontalRatioSets[si][k]);
+      }
+      if (vals.length >= 2) {
+        vals.sort(function(a, b) { return a - b; });
+        var medVal = vals[Math.floor(vals.length / 2)];
+        bins2D[k] = quantize(medVal);
+        rawValues2D[k] = medVal;
+      }
+    }
+  }
+
+  // 2D hash
+  var hash2DParts = [];
+  for (var wi2 = 0; wi2 < WHITELIST_RATIOS.length; wi2++) {
+    var k2 = WHITELIST_RATIOS[wi2];
+    if (bins2D[k2] !== undefined) hash2DParts.push(k2 + ':' + bins2D[k2]);
+  }
+  var hash2D = await sha256hex(hash2DParts.join('|'));
+
+  // ================================================================
+  // Phase 5: 3D ID（13 穩定 3D 特徵 bins）
+  // ================================================================
+  // 穩定 3D 特徵（移除 F02 chin + F03 jaw — 測量本身不穩定 CV>10%）
+  var STABLE_3D_FEATURES = [
+    'T01_temple_width', 'T03_cheek_jaw_ratio', 'E04_orbital_width_R',
+    'E05_intercanthal', 'N05_alar_width_3d', 'F05_face_side',
+    'G02_face_width_height', 'T02_temple_recess', 'T05_bizygomatic',
+    'E03_orbital_width_L', 'F04_bigonial'
+  ];
+  var BIN_3D = 0.25; // 3D bin width（跟 2D 一致，0 drifters at BW=0.25）
+
+  var bins3D = {};
+  var rawValues3D = {};
+  var dr3 = result.depthRatios;
+  for (var si3 = 0; si3 < STABLE_3D_FEATURES.length; si3++) {
+    var fk = STABLE_3D_FEATURES[si3];
+    if (dr3[fk] !== undefined) {
+      bins3D[fk] = quantize3D(dr3[fk], BIN_3D);
+      rawValues3D[fk] = dr3[fk];
+    }
+  }
+
+  var hash3DParts = [];
+  for (var si4 = 0; si4 < STABLE_3D_FEATURES.length; si4++) {
+    var fk2 = STABLE_3D_FEATURES[si4];
+    if (bins3D[fk2] !== undefined) hash3DParts.push(fk2 + ':' + bins3D[fk2]);
+  }
+  var hash3D = await sha256hex(hash3DParts.join('|'));
+
+  // Combined hash
+  var hashCombined = await sha256hex(hash2DParts.join('|') + '||' + hash3DParts.join('|'));
+
+  lg('[ID] 2D bins: ' + hash2DParts.length + ' → ' + hash2D.substring(0, 16) + '...');
+  lg('[ID] 3D bins: ' + hash3DParts.length + ' → ' + hash3D.substring(0, 16) + '...');
+  lg('[ID] Combined: ' + hashCombined.substring(0, 16) + '...');
+
+  // Store for login test
+  storedFrontalRef = { bins: bins2D, ratios: {}, hash3D: hash3D };
+
+  // ================================================================
+  // Phase 6: 視覺化
   // ================================================================
   render3DFaceViews(result.model);
 
-  // 互動點雲用 RGB 顏色
   pcModel = coloredModel;
   document.getElementById('pointcloud-box').style.display = 'block';
   pcRedraw();
 
-  displayTriangulationResult(result, totalFrames, null);
+  displayTriangulationResult(result, totalFrames, null, {
+    hash2D: hash2D, hash3D: hash3D, hashCombined: hashCombined,
+    bins2D: bins2D, bins3D: bins3D,
+    rawValues2D: rawValues2D, rawValues3D: rawValues3D,
+    count2D: hash2DParts.length, count3D: hash3DParts.length
+  });
 
-  st('\u25B2 True 3D: ' + totalFrames + ' frames × 468 landmarks | IPD=' + result.ipd3d.toFixed(4)
-    + ' | Nose=' + result.depthRatios.D01_nose_protrusion.toFixed(3), 'ok');
+  st('\u25B2 True 3D: ' + totalFrames + ' frames | 2D=' + hash2D.substring(0, 8)
+    + '... | 3D=' + hash3D.substring(0, 8) + '...', 'ok');
 
   enableButtons();
 }
 
-function displayTriangulationResult(result, totalRaw, selection) {
+function displayTriangulationResult(result, totalRaw, selection, idData) {
   var el = document.getElementById('multi-result');
   el.style.display = 'block';
 
@@ -2773,43 +3117,183 @@ function displayTriangulationResult(result, totalRaw, selection) {
 
   // 深度比率表
   html += '<div style="padding:10px;background:#0c0c14;border:1px solid #333;border-radius:8px;margin-bottom:8px">';
-  html += '<div style="color:#ffc107;font-weight:700;margin-bottom:6px">Depth Ratios (IPD = 1.0)</div>';
+  html += '<div style="color:#ffc107;font-weight:700;margin-bottom:6px">3D Features (IPD = 1.0) — 6 categories</div>';
   html += '<table style="width:100%;font-size:.7em;border-collapse:collapse">';
-  html += '<tr style="color:#00e5ff;border-bottom:2px solid #333"><th>ID</th><th>Name</th><th>Value</th></tr>';
 
-  var ratioEntries = [
-    ['D01', 'Nose protrusion (tip vs eye plane)', dr.D01_nose_protrusion],
-    ['D02', 'Nasion depth (bridge vs eye plane)', dr.D02_nasion_depth],
-    ['D03', 'Orbital depth (brow vs eye)', dr.D03_orbital_depth],
-    ['D04', 'Cheekbone (vs eye plane)', dr.D04_cheekbone],
-    ['D05', 'Forehead curve (center vs sides)', dr.D05_forehead_curve],
-    ['D06', 'Chin protrusion (vs eye plane)', dr.D06_chin_protrusion],
-    ['D07', 'Nose length 3D (nasion→tip)', dr.D07_nose_length_3d],
-    ['D08', 'Orbital-nasion 3D', dr.D08_orbital_nasion_3d],
-    ['D09', 'Face side depth (cheek→ear)', dr.D09_face_side_depth],
-    ['D10', 'Alar width 3D', dr.D10_alar_width_3d],
-    ['D11', 'Face depth (nose→ear)', dr.D11_face_depth],
-    ['D12', 'Bizygomatic 3D (cheek↔cheek)', dr.D12_bizygomatic_3d],
+  // 按類別分組顯示
+  var categories = [
+    { name: 'G: Global Face Shape', color: '#00e5ff', items: [
+      ['G01', 'Face width/depth ratio', dr.G01_face_width_depth],
+      ['G02', 'Face width/height 3D', dr.G02_face_width_height],
+      ['G03', 'Upper/lower face ratio', dr.G03_upper_lower_face],
+      ['G04', 'Face depth (nose→ear)', dr.G04_face_depth],
+    ]},
+    { name: 'T: Temple & Cheekbone', color: '#a855f7', items: [
+      ['T01', 'Temple width 3D', dr.T01_temple_width],
+      ['T02', 'Temple recess vs cheek', dr.T02_temple_recess],
+      ['T03', 'Cheek/jaw width ratio', dr.T03_cheek_jaw_ratio],
+      ['T04', 'Cheekbone projection', dr.T04_cheekbone_proj],
+      ['T05', 'Bizygomatic 3D', dr.T05_bizygomatic],
+    ]},
+    { name: 'E: Eye Orbital', color: '#0ea5e9', items: [
+      ['E01', 'Orbital depth (brow vs eye)', dr.E01_orbital_depth],
+      ['E02', 'Brow ridge prominence', dr.E02_brow_ridge],
+      ['E03', 'Orbital width L', dr.E03_orbital_width_L],
+      ['E04', 'Orbital width R', dr.E04_orbital_width_R],
+      ['E05', 'Intercanthal dist 3D', dr.E05_intercanthal],
+      ['E06', 'Orbital→nasion L', dr.E06_orbital_nasion_L],
+      ['E07', 'Orbital→nasion R', dr.E07_orbital_nasion_R],
+    ]},
+    { name: 'N: Nasal 3D', color: '#f59e0b', items: [
+      ['N01', 'Nose protrusion', dr.N01_nose_protrusion],
+      ['N02', 'Nasion depth', dr.N02_nasion_depth],
+      ['N03', 'Bridge curvature', dr.N03_bridge_curvature],
+      ['N04', 'Nose length 3D', dr.N04_nose_length_3d],
+      ['N05', 'Alar width 3D', dr.N05_alar_width_3d],
+      ['N06', 'Nose-lip depth diff', dr.N06_nose_lip_depth],
+      ['N07', 'Alar angle 3D', dr.N07_alar_angle],
+    ]},
+    { name: 'F: Forehead & Chin', color: '#10b981', items: [
+      ['F01', 'Forehead curvature', dr.F01_forehead_curve],
+      ['F02', 'Chin protrusion', dr.F02_chin_protrusion],
+      ['F03', 'Jaw angle 3D', dr.F03_jaw_angle],
+      ['F04', 'Bigonial width 3D', dr.F04_bigonial],
+      ['F05', 'Face side depth', dr.F05_face_side],
+    ]},
+    { name: 'A: Asymmetry', color: '#ef4444', items: [
+      ['A01', 'Cheek Z asymmetry', dr.A01_cheek_asymm],
+      ['A02', 'Orbital depth asymm', dr.A02_orbital_asymm],
+      ['A03', 'Jaw asymmetry', dr.A03_jaw_asymm],
+      ['A04', 'Mouth asymmetry', dr.A04_mouth_asymm],
+    ]},
   ];
 
-  for (var ri = 0; ri < ratioEntries.length; ri++) {
-    var re = ratioEntries[ri];
-    var val = re[2];
-    var color = val > 0.01 ? '#0f0' : '#f44';
-    html += '<tr style="border-bottom:1px solid #1a1a2a">'
-      + '<td style="color:#e11d48;font-weight:700">' + re[0] + '</td>'
-      + '<td style="color:#888">' + re[1] + '</td>'
-      + '<td style="color:' + color + ';font-weight:700">' + val.toFixed(4) + '</td>'
-      + '</tr>';
+  var ratioEntries = [];
+  for (var ci2 = 0; ci2 < categories.length; ci2++) {
+    for (var ri2 = 0; ri2 < categories[ci2].items.length; ri2++) {
+      ratioEntries.push(categories[ci2].items[ri2]);
+    }
+  }
+
+  for (var ci3 = 0; ci3 < categories.length; ci3++) {
+    var cat = categories[ci3];
+    html += '<tr style="background:#111;border-bottom:2px solid ' + cat.color + '">'
+      + '<td colspan="3" style="color:' + cat.color + ';font-weight:700;padding:6px 4px;font-size:1.05em">' + cat.name + '</td></tr>';
+    for (var ri3 = 0; ri3 < cat.items.length; ri3++) {
+      var re = cat.items[ri3];
+      var val = re[2];
+      var vc = val > 0.01 ? '#0f0' : val > 0.001 ? '#ffc107' : '#f44';
+      html += '<tr style="border-bottom:1px solid #1a1a2a">'
+        + '<td style="color:' + cat.color + ';font-weight:700;width:40px">' + re[0] + '</td>'
+        + '<td style="color:#888">' + re[1] + '</td>'
+        + '<td style="color:' + vc + ';font-weight:700;text-align:right;width:70px">' + val.toFixed(4) + '</td>'
+        + '</tr>';
+    }
   }
   html += '</table>';
+  html += '<div style="font-size:.6em;color:#555;margin-top:6px">'
+    + ratioEntries.length + ' features | IPD_3D=' + result.ipd3d.toFixed(6) + ' | All normalized (IPD=1.0)</div>';
   html += '</div>';
 
-  // 與 2D 比率對比（如果有的話）
-  html += '<div style="font-size:.65em;color:#555;margin-top:6px">'
-    + 'IPD_3D (raw): ' + result.ipd3d.toFixed(6)
-    + ' | All depth values normalized by IPD (IPD = 1.0)'
-    + '</div>';
+  // ID Hashes
+  if (idData) {
+    html += '<div style="margin-top:10px;padding:14px;background:#0a1a0a;border:2px solid #0f0;border-radius:10px">';
+    html += '<div style="color:#0f0;font-weight:700;font-size:1em;margin-bottom:10px">\uD83D\uDD11 Identity Hashes</div>';
+
+    // 2D ID
+    html += '<div style="margin-bottom:10px;padding:8px;background:#0c0c14;border:1px solid #00e5ff;border-radius:6px">';
+    html += '<div style="color:#00e5ff;font-size:.75em;font-weight:700">2D Face ID (' + idData.count2D + ' bone ratios, BW=0.25)</div>';
+    html += '<div style="color:#0f0;font-size:.85em;word-break:break-all;margin-top:4px;letter-spacing:1px">' + idData.hash2D + '</div>';
+    html += '</div>';
+
+    // 3D ID
+    html += '<div style="margin-bottom:10px;padding:8px;background:#0c0c14;border:1px solid #e11d48;border-radius:6px">';
+    html += '<div style="color:#e11d48;font-size:.75em;font-weight:700">3D Structure ID (' + idData.count3D + ' features, BW=0.25)</div>';
+    html += '<div style="color:#0f0;font-size:.85em;word-break:break-all;margin-top:4px;letter-spacing:1px">' + idData.hash3D + '</div>';
+    html += '</div>';
+
+    // Combined
+    html += '<div style="padding:8px;background:#0c0c14;border:2px solid #ffc107;border-radius:6px">';
+    html += '<div style="color:#ffc107;font-size:.75em;font-weight:700">\u2B50 Unique ID (2D+3D combined, ' + (idData.count2D + idData.count3D) + ' features)</div>';
+    html += '<div style="color:#ffc107;font-size:1em;word-break:break-all;margin-top:4px;letter-spacing:1px;font-weight:700">' + idData.hashCombined + '</div>';
+    html += '</div>';
+
+    // Bin detail table — 方便對比每次掃描的 bin 值
+    html += '<div style="margin-top:10px;padding:8px;background:#0c0c14;border:1px solid #333;border-radius:6px">';
+    html += '<div style="color:#888;font-size:.7em;font-weight:700;margin-bottom:6px">Bin Values (for debugging)</div>';
+
+    // 2D bins
+    html += '<div style="font-size:.6em;margin-bottom:6px">';
+    html += '<span style="color:#00e5ff;font-weight:700">2D (' + idData.count2D + '): </span>';
+    var b2dKeys = Object.keys(idData.bins2D).sort();
+    var b2dParts = [];
+    for (var bi = 0; bi < b2dKeys.length; bi++) {
+      b2dParts.push('<span style="color:#0f0">' + b2dKeys[bi] + '</span>=' + idData.bins2D[b2dKeys[bi]]);
+    }
+    html += b2dParts.join(' ');
+    html += '</div>';
+
+    // 3D bins
+    html += '<div style="font-size:.6em;margin-bottom:6px">';
+    html += '<span style="color:#e11d48;font-weight:700">3D (' + idData.count3D + '): </span>';
+    var b3dKeys = Object.keys(idData.bins3D).sort();
+    var b3dParts = [];
+    for (var bi2 = 0; bi2 < b3dKeys.length; bi2++) {
+      var shortName = b3dKeys[bi2].replace(/_/g, '').substring(0, 6);
+      b3dParts.push('<span style="color:#ffc107">' + shortName + '</span>=' + idData.bins3D[b3dKeys[bi2]]);
+    }
+    html += b3dParts.join(' ');
+    html += '</div>';
+
+    // 2D raw values (for boundary analysis)
+    if (idData.rawValues2D) {
+      html += '<div style="font-size:.55em;color:#555;margin-bottom:4px">';
+      html += '2D raw: ';
+      var rv2dParts = [];
+      for (var bi3 = 0; bi3 < b2dKeys.length; bi3++) {
+        var k3 = b2dKeys[bi3];
+        var rv = idData.rawValues2D[k3];
+        if (rv !== undefined) {
+          var bin = idData.bins2D[k3];
+          var binCenter = bin * 0.25;
+          var distToEdge = Math.abs(rv - (binCenter + 0.125));
+          var nearEdge = distToEdge > 0.10; // 接近 bin 邊界
+          rv2dParts.push(k3 + '=' + rv.toFixed(3) + (nearEdge ? '\u26a0' : ''));
+        }
+      }
+      html += rv2dParts.join(' ');
+      html += '</div>';
+    }
+
+    // 3D raw values
+    if (idData.rawValues3D) {
+      html += '<div style="font-size:.55em;color:#555">';
+      html += '3D raw: ';
+      var rv3dParts = [];
+      for (var bi4 = 0; bi4 < b3dKeys.length; bi4++) {
+        var k4 = b3dKeys[bi4];
+        var rv2 = idData.rawValues3D[k4];
+        if (rv2 !== undefined) {
+          var bin2 = idData.bins3D[k4];
+          var binCenter2 = bin2 * 0.25;
+          var distToEdge2 = Math.abs(rv2 - (binCenter2 + 0.125));
+          var nearEdge2 = distToEdge2 > 0.10;
+          var shortN = k4.replace(/_/g,'').substring(0,6);
+          rv3dParts.push(shortN + '=' + rv2.toFixed(3) + (nearEdge2 ? '\u26a0' : ''));
+        }
+      }
+      html += rv3dParts.join(' ');
+      html += '</div>';
+    }
+
+    html += '<div style="font-size:.55em;color:#444;margin-top:4px">'
+      + 'Discriminative power: 5^' + (idData.count2D + idData.count3D)
+      + ' \u2248 10^' + Math.round((idData.count2D + idData.count3D) * Math.log10(5))
+      + ' | \u26a0 = near bin edge</div>';
+    html += '</div>';
+
+    html += '</div>';
+  }
 
   el.innerHTML = html;
 }
@@ -2975,6 +3459,165 @@ async function doLoginTest() {
   enableButtons();
 }
 
+// ============================================================
+// CNN STABILITY TEST — 人不動，連拍 20 幀，測量 landmark 穩定性
+// ============================================================
+async function doCnnStability() {
+  if (!ready) return;
+  disableAllButtons();
+
+  st('\uD83D\uDD2C CNN Stability: HOLD STILL — capturing 20 frames...', 'ld');
+
+  var frames = [];
+  var TOTAL = 20;
+  var INTERVAL = 200; // 200ms 間隔
+
+  for (var i = 0; i < TOTAL; i++) {
+    var mp = fl.detect(vid);
+    if (!mp.faceLandmarks || !mp.faceLandmarks.length) {
+      i--; await sleep(100); continue;
+    }
+    frames.push(mp.faceLandmarks[0]);
+    st('\uD83D\uDD2C Frame ' + (i+1) + '/' + TOTAL + ' — HOLD STILL', 'ld');
+    await sleep(INTERVAL);
+  }
+
+  // 分析每個 landmark 的 x, y 穩定性
+  var numLm = frames[0].length;
+  var lmStats = [];
+  for (var li = 0; li < numLm; li++) {
+    var xs = [], ys = [];
+    for (var fi = 0; fi < frames.length; fi++) {
+      xs.push(frames[fi][li].x);
+      ys.push(frames[fi][li].y);
+    }
+    var meanX = xs.reduce(function(a,b){return a+b},0) / xs.length;
+    var meanY = ys.reduce(function(a,b){return a+b},0) / ys.length;
+    var stdX = Math.sqrt(xs.reduce(function(s,v){return s+(v-meanX)*(v-meanX)},0)/xs.length);
+    var stdY = Math.sqrt(ys.reduce(function(s,v){return s+(v-meanY)*(v-meanY)},0)/ys.length);
+    lmStats.push({ idx: li, meanX: meanX, meanY: meanY, stdX: stdX, stdY: stdY,
+      cvX: meanX > 0 ? stdX/meanX*100 : 0, cvY: meanY > 0 ? stdY/meanY*100 : 0 });
+  }
+
+  // 測試多種基準距離的穩定性
+  var refTests = [
+    { name: 'IPD outer (lm33-263)', fn: function(lm) { return Math.abs(lm[33].x - lm[263].x); } },
+    { name: 'IPD inner (lm133-362)', fn: function(lm) { return Math.abs(lm[133].x - lm[362].x); } },
+    { name: 'Brow span (lm105-334)', fn: function(lm) { return Math.abs(lm[105].x - lm[334].x); } },
+    { name: 'Brow outer (lm70-300)', fn: function(lm) { return Math.abs(lm[70].x - lm[300].x); } },
+    { name: 'Nose bridge (lm6-2 Y)', fn: function(lm) { return Math.abs(lm[6].y - lm[2].y); } },
+    { name: 'Face height (lm10-152 Y)', fn: function(lm) { return Math.abs(lm[10].y - lm[152].y); } },
+    { name: 'IPD+inner avg', fn: function(lm) { return (Math.abs(lm[33].x-lm[263].x)+Math.abs(lm[133].x-lm[362].x))/2; } },
+    { name: 'IPD+brow avg', fn: function(lm) { return (Math.abs(lm[33].x-lm[263].x)+Math.abs(lm[105].x-lm[334].x))/2; } },
+  ];
+
+  var refResults = [];
+  for (var ri = 0; ri < refTests.length; ri++) {
+    var vals = [];
+    for (var fi2 = 0; fi2 < frames.length; fi2++) {
+      vals.push(refTests[ri].fn(frames[fi2]));
+    }
+    var mean = vals.reduce(function(a,b){return a+b},0) / vals.length;
+    var std = Math.sqrt(vals.reduce(function(s,v){return s+(v-mean)*(v-mean)},0)/vals.length);
+    var cv = mean > 0 ? std/mean*100 : 0;
+    var min = Math.min.apply(null, vals);
+    var max = Math.max.apply(null, vals);
+    refResults.push({ name: refTests[ri].name, mean: mean, std: std, cv: cv, min: min, max: max, range: max-min });
+  }
+
+  // 測試不同基準下 bone ratio 的穩定性
+  var testRatios = [
+    { name: 'F02 forehead/ref', num: function(lm) { var em={x:(lm[33].x+lm[263].x)/2,y:(lm[33].y+lm[263].y)/2}; return Math.sqrt(Math.pow(lm[10].x-em.x,2)+Math.pow(lm[10].y-em.y,2)); } },
+    { name: 'EL06 eyeW/ref', num: function(lm) { return Math.abs(lm[33].x-lm[133].x); } },
+    { name: 'N01 alarW/ref', num: function(lm) { return Math.abs(lm[48].x-lm[278].x); } },
+    { name: 'B04 browInner/ref', num: function(lm) { return Math.abs(lm[105].x-lm[334].x); } },
+  ];
+
+  var ratioStability = [];
+  for (var ti = 0; ti < testRatios.length; ti++) {
+    var row = { name: testRatios[ti].name, refs: [] };
+    for (var ri2 = 0; ri2 < refTests.length; ri2++) {
+      var ratioVals = [];
+      for (var fi3 = 0; fi3 < frames.length; fi3++) {
+        var num = testRatios[ti].num(frames[fi3]);
+        var den = refTests[ri2].fn(frames[fi3]);
+        if (den > 0.001) ratioVals.push(num / den);
+      }
+      var rMean = ratioVals.reduce(function(a,b){return a+b},0) / ratioVals.length;
+      var rStd = Math.sqrt(ratioVals.reduce(function(s,v){return s+(v-rMean)*(v-rMean)},0)/ratioVals.length);
+      var rCv = rMean > 0 ? rStd/rMean*100 : 0;
+      row.refs.push({ refName: refTests[ri2].name, mean: rMean, cv: rCv });
+    }
+    ratioStability.push(row);
+  }
+
+  // 顯示結果
+  var el = document.getElementById('multi-result');
+  el.style.display = 'block';
+
+  var html = '<div style="color:#00e5ff;font-weight:700;margin-bottom:10px;font-size:1.1em">'
+    + '\uD83D\uDD2C CNN Stability Test — ' + TOTAL + ' frames (hold still)</div>';
+
+  // Landmark 穩定性 top 10 最不穩定
+  var sortedLm = lmStats.slice().sort(function(a,b) { return (b.stdX+b.stdY)-(a.stdX+a.stdY); });
+  html += '<div style="padding:8px;background:#0c0c14;border:1px solid #333;border-radius:6px;margin-bottom:8px">';
+  html += '<div style="color:#f44;font-size:.75em;font-weight:700">Top 10 Most Unstable Landmarks</div>';
+  html += '<table style="width:100%;font-size:.6em;border-collapse:collapse;margin-top:4px">';
+  html += '<tr style="color:#888"><th>LM</th><th>stdX</th><th>stdY</th><th>cvX%</th><th>cvY%</th></tr>';
+  for (var si = 0; si < 10; si++) {
+    var ls = sortedLm[si];
+    html += '<tr><td style="color:#ffc107">lm[' + ls.idx + ']</td>'
+      + '<td>' + ls.stdX.toFixed(5) + '</td><td>' + ls.stdY.toFixed(5) + '</td>'
+      + '<td style="color:' + (ls.cvX>0.5?'#f44':'#0f0') + '">' + ls.cvX.toFixed(2) + '</td>'
+      + '<td style="color:' + (ls.cvY>0.5?'#f44':'#0f0') + '">' + ls.cvY.toFixed(2) + '</td></tr>';
+  }
+  html += '</table></div>';
+
+  // 基準距離穩定性
+  html += '<div style="padding:8px;background:#0c0c14;border:1px solid #00e5ff;border-radius:6px;margin-bottom:8px">';
+  html += '<div style="color:#00e5ff;font-size:.75em;font-weight:700">Reference Distance Stability</div>';
+  html += '<table style="width:100%;font-size:.65em;border-collapse:collapse;margin-top:4px">';
+  html += '<tr style="color:#888"><th>Reference</th><th>Mean</th><th>Std</th><th>CV%</th><th>Range</th></tr>';
+  refResults.sort(function(a,b) { return a.cv - b.cv; });
+  for (var ri3 = 0; ri3 < refResults.length; ri3++) {
+    var rr = refResults[ri3];
+    var best = ri3 === 0;
+    html += '<tr style="' + (best ? 'background:#0a1a0a' : '') + '">'
+      + '<td style="color:#ffc107">' + rr.name + '</td>'
+      + '<td>' + rr.mean.toFixed(5) + '</td>'
+      + '<td>' + rr.std.toFixed(6) + '</td>'
+      + '<td style="color:' + (rr.cv<0.3?'#0f0':rr.cv<0.5?'#ffc107':'#f44') + ';font-weight:700">' + rr.cv.toFixed(3) + '</td>'
+      + '<td>' + rr.range.toFixed(5) + '</td></tr>';
+  }
+  html += '</table></div>';
+
+  // Ratio 穩定性 × 不同基準
+  html += '<div style="padding:8px;background:#0c0c14;border:1px solid #a855f7;border-radius:6px;margin-bottom:8px">';
+  html += '<div style="color:#a855f7;font-size:.75em;font-weight:700">Ratio CV% by Reference (lower = better)</div>';
+  html += '<table style="width:100%;font-size:.6em;border-collapse:collapse;margin-top:4px">';
+  html += '<tr style="color:#888"><th>Ratio</th>';
+  for (var ri4 = 0; ri4 < refResults.length; ri4++) {
+    html += '<th style="max-width:60px;overflow:hidden;font-size:.8em">' + refResults[ri4].name.split('(')[0].trim() + '</th>';
+  }
+  html += '</tr>';
+  for (var ti2 = 0; ti2 < ratioStability.length; ti2++) {
+    html += '<tr><td style="color:#ffc107">' + ratioStability[ti2].name + '</td>';
+    // 找出每個 ref 的 CV，按 refResults 的排序顯示
+    for (var ri5 = 0; ri5 < refResults.length; ri5++) {
+      var refName = refResults[ri5].name;
+      var found = ratioStability[ti2].refs.find(function(r) { return r.refName === refName; });
+      var cv = found ? found.cv : 999;
+      html += '<td style="color:' + (cv<0.3?'#0f0':cv<0.5?'#ffc107':'#f44') + '">' + cv.toFixed(2) + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</table></div>';
+
+  el.innerHTML = html;
+  st('\uD83D\uDD2C CNN Stability test complete — ' + TOTAL + ' frames analyzed', 'ok');
+  enableButtons();
+}
+
 function doClear() {
   allCaptures = [];
   calibrationData = null;
@@ -3074,6 +3717,7 @@ function enableButtons() {
   document.getElementById('b-dense3d').disabled = false;
   document.getElementById('b-3d-multi').disabled = false;
   document.getElementById('b-login').disabled = false;
+  document.getElementById('b-cnn-stab').disabled = false;
   document.getElementById('b-clear').disabled = false;
 }
 
@@ -3083,6 +3727,7 @@ function disableAllButtons() {
   document.getElementById('b-dense3d').disabled = true;
   document.getElementById('b-3d-multi').disabled = true;
   document.getElementById('b-login').disabled = true;
+  document.getElementById('b-cnn-stab').disabled = true;
   document.getElementById('b-clear').disabled = true;
 }
 
