@@ -30,7 +30,7 @@ export interface BoundingBox {
 // ============================================================================
 
 /** 活體挑戰類型 */
-export type LivenessChallenge = 'blink' | 'turn_head';
+export type LivenessChallenge = 'blink' | 'turn_head' | 'turn_right' | 'turn_left';
 
 /** 活體挑戰狀態 */
 export type LivenessChallengeStatus = 'waiting' | 'detected' | 'timeout';
@@ -141,6 +141,50 @@ export interface FaceGeometry {
   noseOffsetX: number;
   /** 臉部邊界框 */
   boundingBox: BoundingBox;
+}
+
+// ============================================================================
+// Face Detection Result (from faceMesh.detectFace)
+// ============================================================================
+
+/** detectFace() 回傳的完整結果 */
+export interface FaceDetectionResult {
+  /** 468 landmark 座標 */
+  landmarks: FaceLandmark[];
+  /** 4×4 transformation matrix (column-major, 16 elements) */
+  matrix?: { data: number[] };
+  /** Y 軸旋轉角度 (radians)，正 = 向右轉 */
+  yaw?: number;
+}
+
+// ============================================================================
+// Bone Ratio Storage Types
+// ============================================================================
+
+/** 加密儲存的骨骼比率資料（取代舊的 Float32Array embedding） */
+export interface StoredBoneRatioData {
+  /** AES-256-GCM 加密的 JSON */
+  ciphertext: string;
+  /** IV (Base64) */
+  iv: string;
+  /** 儲存時間 */
+  timestamp: number;
+  /** 資料來源標記 */
+  source: 'bone-ratio';
+}
+
+/** 骨骼比率明文資料（加密前/解密後） */
+export interface BoneRatioPlainData {
+  /** 正面基準 bins (ratio id → bin index) */
+  frontalBins: Record<string, number>;
+  /** v17: 2D face hash (SHA-256, 25 bins) */
+  hash2D?: string;
+  /** v17: 3D structure hash (SHA-256, 11 bins) */
+  hash3D?: string;
+  /** v17: Combined hash (2D+3D, 36 bins) */
+  hashCombined?: string;
+  /** Legacy: 唯一 face hash (backward compat) */
+  hash: string;
 }
 
 // ============================================================================

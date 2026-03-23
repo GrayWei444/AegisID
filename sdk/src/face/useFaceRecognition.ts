@@ -61,19 +61,16 @@ const MIN_VERIFY_FRAMES = 5;
 /** 偵測迴圈間隔 (ms) */
 const DETECTION_INTERVAL = 100;
 
-/** 註冊模式：同 zone 最小擷取間隔 (ms)，避免同角度過多重複幀 */
-const REGISTER_CAPTURE_INTERVAL = 120;
-
 /**
- * Yaw zone 定義（與測試工具一致）
- * 確保左/中/右角度均勻分佈
+ * v17 Yaw zone 定義 — 5 區各有最低幀數要求
+ * 高幀率擷取（不限間隔），每幀都存
  */
 const YAW_ZONES = [
-  { min: 0.20, max: 0.50, target: 4 },   // far-left
-  { min: 0.08, max: 0.20, target: 4 },   // left
-  { min: -0.08, max: 0.08, target: 6 },  // center
-  { min: -0.20, max: -0.08, target: 4 }, // right
-  { min: -0.50, max: -0.20, target: 4 }, // far-right
+  { min: 0.20, max: 0.50, target: 8 },   // far-left
+  { min: 0.08, max: 0.20, target: 8 },   // left
+  { min: -0.08, max: 0.08, target: 15 }, // center
+  { min: -0.20, max: -0.08, target: 8 }, // right
+  { min: -0.50, max: -0.20, target: 8 }, // far-right
 ] as const;
 
 function getYawZone(yaw: number): number {
@@ -180,7 +177,6 @@ export function useFaceRecognition({
   const boneRatioResultRef = useRef<BoneRatioPlainData | null>(null);
   // Yaw zone 計數（註冊模式，確保左/中/右均勻分佈）
   const zoneCountsRef = useRef<number[]>([0, 0, 0, 0, 0]);
-  const lastCaptureMsRef = useRef(0);
 
   // Anti-spoof 相關 refs
   const lastCnnTimestampRef = useRef(0);
@@ -428,19 +424,15 @@ export function useFaceRecognition({
     if (challenge === 'turn_head' || challenge === 'turn_right' || challenge === 'turn_left') {
       const yaw = detection.yaw ?? 0;
       const zone = getYawZone(yaw);
-      const zoneCount = zoneCountsRef.current[zone];
-      const zoneTarget = YAW_ZONES[zone].target;
 
-      if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
-        const frame: CapturedFrame = {
-          landmarks: detection.landmarks as unknown as Landmark3D[],
-          matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
-          yaw,
-        };
-        capturedFramesRef.current.push(frame);
-        zoneCountsRef.current[zone]++;
-        lastCaptureMsRef.current = now;
-      }
+      // v17: 高幀率擷取 — 每幀都存，不限間隔
+      const frame: CapturedFrame = {
+        landmarks: detection.landmarks as unknown as Landmark3D[],
+        matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+        yaw,
+      };
+      capturedFramesRef.current.push(frame);
+      zoneCountsRef.current[zone]++;
     }
 
     if (!challenge) {
@@ -456,6 +448,9 @@ export function useFaceRecognition({
             boneRatioResultRef.current = {
               frontalBins: Object.fromEntries(result.frontalBins),
               hash: result.hashes.hashCombined,
+              hash2D: result.hashes.hash2D,
+              hash3D: result.hashes.hash3D,
+              hashCombined: result.hashes.hashCombined,
             };
 
             const antiSpoof = computeAntiSpoofResult();
@@ -575,7 +570,7 @@ export function useFaceRecognition({
       await saveBoneRatioData(boneData, encryptionKey);
       setStatusAndRef('verified');
       setIsVerified(true);
-      devLog('[FaceRec] Face registered (bone ratio), hash:', boneData.hash.slice(0, 16) + '...', 'bins:', Object.keys(boneData.frontalBins).length);
+      devLog('[FaceRec] Face registered — 2D:', (boneData.hash2D ?? '').slice(0, 12) + '... 3D:', (boneData.hash3D ?? '').slice(0, 12) + '... bins:', Object.keys(boneData.frontalBins).length);
       return true;
     } catch (err) {
       devWarn('[FaceRec] Failed to save bone ratio data:', err);
