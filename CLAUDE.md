@@ -288,6 +288,51 @@ AEGISID_CLIENT_CREDIT_SECRET  — 客戶端信用 HMAC
 | MCP Server | https://mcp.aegisrd.com/mcp |
 | GitHub | GrayWei444 |
 
+### 部署方式
+
+Caddy 容器 serve `/var/www/aegisrd/`，容器內無法直接存取此路徑。
+**必須透過 MCP Server 部署**（Python script）：
+
+**測試工具部署：**
+```bash
+# tools/face-id-test.html → https://aegisrd.com/face-id-test/
+# 使用 MCP write_file 部署到 VPS
+python3 << 'PYEOF'
+import json, urllib.request, ssl
+with open('tools/face-id-test.html', 'r') as f:
+    content = f.read()
+payload = json.dumps({
+    "tool": "write_file",
+    "parameters": {
+        "path": "/var/www/aegisrd/face-id-test/index.html",
+        "content": content
+    }
+}).encode('utf-8')
+ctx = ssl.create_default_context()
+req = urllib.request.Request('https://mcp.aegisrd.com/mcp', data=payload,
+    headers={'Content-Type': 'application/json'}, method='POST')
+resp = urllib.request.urlopen(req, timeout=30, context=ctx)
+print(resp.status, resp.read().decode()[:200])
+PYEOF
+```
+
+| 來源 | VPS 路徑 | URL |
+|------|---------|-----|
+| `tools/face-id-test.html` | `/var/www/aegisrd/face-id-test/index.html` | https://aegisrd.com/face-id-test/ |
+
+**MCP Server：** https://mcp.aegisrd.com/mcp
+- `exec` — 執行 shell 指令（`parameters.command`）
+- `read_file` / `write_file` — 讀寫檔案（`parameters.path`, `parameters.content`）
+- `list_dir` — 列目錄（`parameters.path`）
+- `docker_ps` / `docker_logs` / `docker_restart` — Docker 管理
+
+**站點對應：**
+| VPS 路徑 | 對應站點 |
+|---------|---------|
+| `/var/www/aegisrd/` | aegisrd.com |
+| `/var/www/talk/` | talk.aegisrd.com |
+| `/var/www/mist/` | mist.aegisrd.com |
+
 ### 從 AegisTalk 遷移的代碼
 
 | 來源 | 目標 | 狀態 |

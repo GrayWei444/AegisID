@@ -94,6 +94,14 @@ button.verify{background:#ffc107;color:#000}
 #depth-legend{display:flex;align-items:center;justify-content:center;gap:6px;font-size:.6em;color:#888;margin-top:6px}
 #depth-bar{width:200px;height:10px;border-radius:3px;background:linear-gradient(to right,#0000ff,#00ffff,#00ff00,#ffff00,#ff0000)}
 
+/* Interactive 3D point cloud viewer */
+#pointcloud-box{display:none;margin:10px 0;text-align:center}
+#pointcloud-canvas{border:1px solid #e11d48;border-radius:8px;background:#08080c;cursor:grab;touch-action:none}
+#pointcloud-canvas:active{cursor:grabbing}
+#pc-controls{display:flex;gap:8px;justify-content:center;align-items:center;margin-top:6px;font-size:.65em;color:#888;flex-wrap:wrap}
+#pc-controls button{font-size:.7em;padding:4px 10px}
+#pc-info{font-size:.6em;color:#555;margin-top:4px}
+
 /* Login test result */
 #login-result{display:none;margin:10px 0;padding:14px;border-radius:8px;border:2px solid #333}
 #login-result.pass{background:#0a1a0a;border-color:#0f0}
@@ -138,13 +146,15 @@ button.verify{background:#ffc107;color:#000}
 </head>
 <body>
 <div class="wrap">
-  <h1>&#9635; AEGISID v15</h1>
-  <p class="sub">v15 IPD-Normalized | 24 Bone-Only Ratios | Weight-Resistant | SHA-256</p>
+  <h1>&#9635; AEGISID v16</h1>
+  <p class="sub">v16 True 3D Triangulation | IPD-Normalized | Depth Ratios | SHA-256</p>
   <div id="bar">Click Start to load models</div>
   <div style="text-align:center;margin-bottom:10px"><video id="vid" autoplay playsinline></video></div>
   <div class="btns">
     <button id="b-start" onclick="doStart()">&#9654; Start</button>
     <button id="b-3d-scan" class="primary" onclick="do3DVideoScan()" disabled>&#127916; 3D Register</button>
+    <button id="b-3d-tri" onclick="doTriangulate3D()" disabled style="background:#e11d48;color:#fff">&#9650; True 3D</button>
+    <button id="b-dense3d" onclick="doDense3D()" disabled style="background:#f59e0b;color:#000;font-weight:700">&#9670; Dense 3D</button>
     <button id="b-3d-multi" onclick="do3DMultiTest()" disabled style="background:#7c3aed;color:#fff">&#129513; 3D Multi (&times;3)</button>
     <button id="b-login" onclick="doLoginTest()" disabled style="background:#ffc107;color:#000">&#128274; Login Test</button>
     <button id="b-pin-test" onclick="doPinTest()" style="background:#a855f7;color:#fff">&#9000; PIN Reg</button>
@@ -179,6 +189,18 @@ button.verify{background:#ffc107;color:#000}
       <div class="face3d-view"><canvas id="face3d-top" width="260" height="180"></canvas><div class="lbl">Top View</div></div>
     </div>
     <div id="depth-legend"><span>Far</span><div id="depth-bar"></div><span>Near</span></div>
+  </div>
+
+  <div id="pointcloud-box">
+    <div style="color:#e11d48;font-weight:700;font-size:.85em;margin-bottom:6px">&#9650; Interactive 3D Point Cloud — drag to rotate</div>
+    <canvas id="pointcloud-canvas" width="500" height="500"></canvas>
+    <div id="pc-controls">
+      <button onclick="pcResetView()">Reset</button>
+      <button onclick="pcToggleWireframe()">Wireframe</button>
+      <button onclick="pcToggleLabels()">Labels</button>
+      <span>Point size: <input type="range" id="pc-ptsize" min="1" max="6" value="3" oninput="pcRedraw()" style="width:80px;vertical-align:middle"></span>
+    </div>
+    <div id="pc-info"></div>
   </div>
 
   <div id="progress"><div id="progress-bar"><div id="progress-fill"></div></div><div id="progress-text"></div></div>
@@ -668,6 +690,473 @@ function build3DModel(allFrames) {
 }
 
 // ============================================================
+// TRUE 3D TRIANGULATION — multi-view geometry
+// ============================================================
+
+/**
+ * 真實三角測量 3D 重建
+ *
+ * 原理：頭部旋轉時，同一 landmark 在不同幀的 2D 位置不同。
+ * 已知旋轉角度（MediaPipe matrix）→ 兩條射線交叉 → 真實 3D 位置。
+ *
+ * 場景：相機固定，頭部旋轉
+ *   幀 A (yaw=+20°): landmark 在 2D 位置 (u_a, v_a)
+ *   幀 B (yaw=-20°): landmark 在 2D 位置 (u_b, v_b)
+ *   已知 A→B 的相對旋轉 R_rel = R_b * R_a^T
+ *   → 三角測量 → 3D 位置 (X, Y, Z)
+ *
+ * 方法：
+ *   MediaPipe 的 landmarks 是「臉部空間」的正規化座標。
+ *   transform matrix = 從 canonical face 到 camera 的旋轉。
+ *   對於固定相機 + 轉頭：
+ *     相機中的 3D 點 = R_head * P_face + t
+ *     我們要求 P_face（canonical face space 的 3D 點）
+ *
+ *   方法 A（本實作）：
+ *     1. 估計焦距 f（從 IPD 像素大小推算）
+ *     2. 每幀：2D landmark → 相機射線
+ *     3. 用 head rotation R 把射線轉到臉部空間
+ *     4. 多幀射線 least-squares 交叉 → 3D 點
+ */
+
+// 矩陣乘法 3×3
+function matMul33(A, B) {
+  var C = [[0,0,0],[0,0,0],[0,0,0]];
+  for (var i = 0; i < 3; i++)
+    for (var j = 0; j < 3; j++)
+      for (var k = 0; k < 3; k++)
+        C[i][j] += A[i][k] * B[k][j];
+  return C;
+}
+
+// 矩陣向量乘法 3×3 * 3×1
+function matVec3(M, v) {
+  return [
+    M[0][0]*v[0] + M[0][1]*v[1] + M[0][2]*v[2],
+    M[1][0]*v[0] + M[1][1]*v[1] + M[1][2]*v[2],
+    M[2][0]*v[0] + M[2][1]*v[1] + M[2][2]*v[2]
+  ];
+}
+
+// 向量相減
+function vecSub(a, b) { return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+function vecDot(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+function vecCross(a, b) {
+  return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+}
+function vecLen(a) { return Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]); }
+function vecScale(a, s) { return [a[0]*s, a[1]*s, a[2]*s]; }
+function vecAdd(a, b) { return [a[0]+b[0], a[1]+b[1], a[2]+b[2]]; }
+
+/**
+ * 從 IPD 像素大小估計等效焦距
+ * 假設 IPD ≈ 63mm，結合像素大小可推算焦距
+ * 但我們不需要絕對值 — 只需要各幀一致即可
+ */
+function estimateFocalLength(lm, vw, vh) {
+  // 使用影像的較大邊做正規化基準
+  // 典型手機前鏡頭 FOV ~60-70°，焦距 ≈ 0.8-1.0 (歸一化)
+  // 精確值不影響比率（都會被 IPD 歸一化消掉）
+  return Math.max(vw, vh) * 0.85; // 預設估計
+}
+
+/**
+ * 2D 歸一化座標 → 相機空間射線方向
+ * @param u, v 歸一化座標 (0~1)
+ * @param fx, fy 焦距 (像素)
+ * @param cx, cy 主點 (像素)
+ * @param w, h 影像尺寸
+ * @returns 射線方向 [dx, dy, dz]（正規化）
+ */
+function pixelToRay(u, v, fx, fy, cx, cy) {
+  var dx = (u - cx) / fx;
+  var dy = (v - cy) / fy;
+  var dz = 1.0;
+  var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+  return [dx/len, dy/len, dz/len];
+}
+
+/**
+ * 多視角三角測量 — 用 least-squares 從多條射線求交點
+ *
+ * 每個觀測定義一條射線：origin + t * direction
+ * 求離所有射線距離平方和最小的 3D 點
+ *
+ * 數學：minimize Σ || P - (o_i + t_i * d_i) ||²
+ * 等價於解線性系統：(Σ (I - d_i*d_i^T)) * P = Σ (I - d_i*d_i^T) * o_i
+ *
+ * @param rays [{origin: [x,y,z], dir: [dx,dy,dz]}]
+ * @returns [X, Y, Z] or null
+ */
+function triangulateMultiRay(rays) {
+  if (rays.length < 2) return null;
+
+  // 建立 3×3 矩陣 A 和 3×1 向量 b
+  var A = [[0,0,0],[0,0,0],[0,0,0]];
+  var b = [0,0,0];
+
+  for (var i = 0; i < rays.length; i++) {
+    var d = rays[i].dir;
+    var o = rays[i].origin;
+
+    // I - d*d^T
+    for (var r = 0; r < 3; r++) {
+      for (var c = 0; c < 3; c++) {
+        var eye = (r === c) ? 1 : 0;
+        var ddT = d[r] * d[c];
+        A[r][c] += eye - ddT;
+      }
+      // (I - d*d^T) * o
+      var sum = 0;
+      for (var c2 = 0; c2 < 3; c2++) {
+        var eye2 = (r === c2) ? 1 : 0;
+        sum += (eye2 - d[r]*d[c2]) * o[c2];
+      }
+      b[r] += sum;
+    }
+  }
+
+  // 解 A * P = b (3×3，用 Cramer's rule)
+  var det = A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+          - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+          + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]);
+
+  if (Math.abs(det) < 1e-12) return null;
+
+  var invDet = 1.0 / det;
+
+  // 伴隨矩陣法
+  var Px = invDet * (b[0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1])
+                   - A[0][1]*(b[1]*A[2][2]-A[1][2]*b[2])
+                   + A[0][2]*(b[1]*A[2][1]-A[1][1]*b[2]));
+  var Py = invDet * (A[0][0]*(b[1]*A[2][2]-A[1][2]*b[2])
+                   - b[0]*(A[1][0]*A[2][2]-A[1][2]*A[2][0])
+                   + A[0][2]*(A[1][0]*b[2]-b[1]*A[2][0]));
+  var Pz = invDet * (A[0][0]*(A[1][1]*b[2]-b[1]*A[2][1])
+                   - A[0][1]*(A[1][0]*b[2]-b[1]*A[2][0])
+                   + b[0]*(A[1][0]*A[2][1]-A[1][1]*A[2][0]));
+
+  return [Px, Py, Pz];
+}
+
+/**
+ * 從 landmarks 幾何自算旋轉角度（不依賴 MediaPipe transform matrix）
+ *
+ * 原理：
+ *   IPD（眼窩間距）是骨骼固定的
+ *   正面時 apparent_IPD 最大
+ *   轉頭時 apparent_IPD = max_IPD × cos(yaw)
+ *   → yaw = arccos(apparent_IPD / max_IPD)
+ *
+ * 同理用多組固定距離交叉驗證：
+ *   - 眼窩外角 (lm[33] ↔ lm[263])
+ *   - 鼻翼 (lm[48] ↔ lm[278])
+ *   - 眼窩內角 (lm[133] ↔ lm[362])
+ *
+ * @param landmarks 單幀 468 landmarks
+ * @returns { yaw, pitch, roll } 弧度
+ */
+function estimateRotationFromLandmarks(lm, refWidths) {
+  // --- Yaw（左右轉）---
+  // 用多組水平距離的 foreshortening
+  var ipdNow = Math.abs(lm[33].x - lm[263].x);     // 眼窩外角
+  var noseW = Math.abs(lm[48].x - lm[278].x);       // 鼻翼
+  var innerE = Math.abs(lm[133].x - lm[362].x);     // 眼窩內角
+
+  // cos(yaw) = apparent / max
+  var cosYaw1 = Math.min(1, ipdNow / refWidths.ipd);
+  var cosYaw2 = Math.min(1, noseW / refWidths.noseW);
+  var cosYaw3 = Math.min(1, innerE / refWidths.innerE);
+
+  // 加權平均（IPD 最可靠）
+  var cosYaw = cosYaw1 * 0.5 + cosYaw2 * 0.25 + cosYaw3 * 0.25;
+  var yaw = Math.acos(Math.max(0, Math.min(1, cosYaw)));
+
+  // 判斷方向：鼻尖偏左 = 正 yaw，偏右 = 負 yaw
+  var eyeMidX = (lm[33].x + lm[263].x) / 2;
+  if (lm[1].x < eyeMidX) yaw = -yaw; // 鼻尖在眼中點左邊 = 頭轉右 = 負 yaw
+
+  // --- Pitch（抬頭低頭）---
+  // 鼻樑垂直長度變化
+  var noseLen = Math.abs(lm[6].y - lm[2].y);
+  var cosPitch = Math.min(1, noseLen / refWidths.noseLen);
+  var pitch = Math.acos(Math.max(0, Math.min(1, cosPitch)));
+
+  // 鼻尖在臉部上半 = 抬頭 = 正 pitch
+  var faceMidY = (lm[10].y + lm[152].y) / 2;
+  var noseRatio = (lm[1].y - lm[10].y) / (lm[152].y - lm[10].y);
+  if (noseRatio < 0.45) pitch = -pitch;
+
+  // --- Roll（歪頭）---
+  // 兩眼高度差
+  var roll = Math.atan2(lm[263].y - lm[33].y, lm[263].x - lm[33].x);
+
+  return { yaw: yaw, pitch: pitch, roll: roll };
+}
+
+/**
+ * 從 yaw, pitch, roll 建構 3×3 旋轉矩陣
+ * R = Rz(roll) × Rx(pitch) × Ry(yaw)
+ */
+function buildRotationMatrix(yaw, pitch, roll) {
+  var cy = Math.cos(yaw), sy = Math.sin(yaw);
+  var cp = Math.cos(pitch), sp = Math.sin(pitch);
+  var cr = Math.cos(roll), sr = Math.sin(roll);
+
+  // Ry * Rx * Rz (standard aerospace convention)
+  return [
+    [cy*cr + sy*sp*sr,  -cy*sr + sy*sp*cr,  sy*cp],
+    [cp*sr,              cp*cr,             -sp   ],
+    [-sy*cr + cy*sp*sr,  sy*sr + cy*sp*cr,   cy*cp]
+  ];
+}
+
+/**
+ * 從所有幀找出正面參考寬度（各固定距離的最大值）
+ */
+function findReferenceWidths(frames) {
+  var maxIpd = 0, maxNoseW = 0, maxInnerE = 0, maxNoseLen = 0;
+
+  for (var i = 0; i < frames.length; i++) {
+    var lm = frames[i].landmarks;
+    var ipd = Math.abs(lm[33].x - lm[263].x);
+    var nw = Math.abs(lm[48].x - lm[278].x);
+    var ie = Math.abs(lm[133].x - lm[362].x);
+    var nl = Math.abs(lm[6].y - lm[2].y);
+    if (ipd > maxIpd) maxIpd = ipd;
+    if (nw > maxNoseW) maxNoseW = nw;
+    if (ie > maxInnerE) maxInnerE = ie;
+    if (nl > maxNoseLen) maxNoseLen = nl;
+  }
+
+  return { ipd: maxIpd, noseW: maxNoseW, innerE: maxInnerE, noseLen: maxNoseLen };
+}
+
+/**
+ * 真實 3D 重建 — Landmark-based rotation + 多幀三角測量
+ *
+ * 完全不依賴 MediaPipe transform matrix
+ * 旋轉角度從 IPD/鼻翼等固定骨骼距離的 foreshortening 自算
+ *
+ * @param frames [{landmarks, yaw}]
+ * @returns {model, ipd3d, depthRatios, stats} or null
+ */
+function buildTrue3DModel(frames) {
+  var validFrames = frames.filter(function(f) { return f.landmarks && f.landmarks.length >= 468; });
+  if (validFrames.length < 5) {
+    lg('[Tri3D] Not enough frames: ' + validFrames.length);
+    return null;
+  }
+
+  var numLm = validFrames[0].landmarks.length;
+
+  // Step 1: 找正面參考寬度
+  var refWidths = findReferenceWidths(validFrames);
+  lg('[Tri3D] Reference widths: IPD=' + refWidths.ipd.toFixed(4)
+    + ' noseW=' + refWidths.noseW.toFixed(4)
+    + ' innerE=' + refWidths.innerE.toFixed(4)
+    + ' noseLen=' + refWidths.noseLen.toFixed(4));
+
+  // Step 2: 每幀自算旋轉
+  var frameData = [];
+  for (var fi = 0; fi < validFrames.length; fi++) {
+    var f = validFrames[fi];
+    var rot = estimateRotationFromLandmarks(f.landmarks, refWidths);
+    var R = buildRotationMatrix(rot.yaw, rot.pitch, rot.roll);
+    frameData.push({ lm: f.landmarks, R: R, yaw: rot.yaw, pitch: rot.pitch, roll: rot.roll });
+  }
+
+  // 排序 by yaw
+  frameData.sort(function(a, b) { return a.yaw - b.yaw; });
+
+  lg('[Tri3D] ' + frameData.length + ' frames, yaw range: '
+    + (frameData[0].yaw * 180 / Math.PI).toFixed(1) + '\u00b0 ~ '
+    + (frameData[frameData.length-1].yaw * 180 / Math.PI).toFixed(1) + '\u00b0');
+
+  // 焦距：用歸一化座標，典型手機前鏡頭
+  var fx = 0.9, fy = 0.9, cx = 0.5, cy = 0.5;
+  var camDist = 5.0;
+
+  // Step 3: 對每個 landmark 多幀三角測量
+  var model3d = [];
+  var convergenceErrors = [];
+
+  for (var li = 0; li < numLm; li++) {
+    var rays = [];
+
+    for (var fi2 = 0; fi2 < frameData.length; fi2++) {
+      var fd = frameData[fi2];
+      var lm = fd.lm[li];
+
+      var rayDir = pixelToRay(lm.x, lm.y, fx, fy, cx, cy);
+
+      var Ri = transposeR(fd.R);
+      var faceRayDir = matVec3(Ri, rayDir);
+      var faceRayLen = vecLen(faceRayDir);
+      faceRayDir = vecScale(faceRayDir, 1.0 / faceRayLen);
+
+      var camFacePos = matVec3(Ri, [0, 0, -camDist]);
+
+      rays.push({ origin: camFacePos, dir: faceRayDir });
+    }
+
+    var pt = triangulateMultiRay(rays);
+    if (pt) {
+      model3d.push({ x: pt[0], y: pt[1], z: pt[2] });
+
+      var totalErr = 0;
+      for (var ri = 0; ri < rays.length; ri++) {
+        var toP = vecSub(pt, rays[ri].origin);
+        var proj2 = vecDot(toP, rays[ri].dir);
+        var closest = vecAdd(rays[ri].origin, vecScale(rays[ri].dir, proj2));
+        var err = vecLen(vecSub(pt, closest));
+        totalErr += err;
+      }
+      convergenceErrors.push(totalErr / rays.length);
+    } else {
+      var flm = validFrames[0].landmarks[li];
+      model3d.push({ x: flm.x - 0.5, y: flm.y - 0.5, z: 0 });
+      convergenceErrors.push(999);
+    }
+  }
+
+  // IPD 3D 歸一化
+  var lm33 = model3d[33], lm263 = model3d[263];
+  var ipd3d = Math.sqrt(
+    Math.pow(lm33.x - lm263.x, 2) +
+    Math.pow(lm33.y - lm263.y, 2) +
+    Math.pow(lm33.z - lm263.z, 2)
+  );
+
+  if (ipd3d < 0.001) {
+    lg('[Tri3D] IPD too small: ' + ipd3d.toFixed(6) + ' — triangulation failed');
+    return null;
+  }
+
+  // 歸一化：IPD = 1.0
+  var scale = 1.0 / ipd3d;
+  var modelNorm = [];
+  for (var ni = 0; ni < model3d.length; ni++) {
+    modelNorm.push({
+      x: model3d[ni].x * scale,
+      y: model3d[ni].y * scale,
+      z: model3d[ni].z * scale
+    });
+  }
+
+  // 統計
+  var avgErr = 0, maxErr = 0, goodCount = 0;
+  for (var ei = 0; ei < convergenceErrors.length; ei++) {
+    if (convergenceErrors[ei] < 900) {
+      avgErr += convergenceErrors[ei];
+      goodCount++;
+      if (convergenceErrors[ei] > maxErr) maxErr = convergenceErrors[ei];
+    }
+  }
+  avgErr = goodCount > 0 ? avgErr / goodCount : 0;
+
+  // 驗證：鼻尖應該在最前面（z 值最小 or 最大取決於座標系）
+  var noseTipZ = modelNorm[1].z; // lm[1] = nose tip
+  var earL_Z = modelNorm[234].z; // left face boundary
+  var earR_Z = modelNorm[454].z; // right face boundary
+
+  lg('[Tri3D] IPD_3D (raw): ' + ipd3d.toFixed(6));
+  lg('[Tri3D] Nose tip Z (normalized): ' + noseTipZ.toFixed(4));
+  lg('[Tri3D] Left boundary Z: ' + earL_Z.toFixed(4) + ', Right boundary Z: ' + earR_Z.toFixed(4));
+  lg('[Tri3D] Convergence: avg=' + avgErr.toFixed(6) + ' max=' + maxErr.toFixed(6) + ' good=' + goodCount + '/468');
+
+  // 計算深度比率（IPD 歸一化後）
+  var depthRatios = computeDepthRatios(modelNorm);
+
+  return {
+    model: modelNorm,
+    modelRaw: model3d,
+    ipd3d: ipd3d,
+    depthRatios: depthRatios,
+    stats: {
+      framesUsed: frameData.length,
+      yawRange: [frameData[0].yaw, frameData[frameData.length-1].yaw],
+      avgError: avgErr,
+      maxError: maxErr,
+      goodLandmarks: goodCount,
+      noseTipZ: noseTipZ,
+      earLZ: earL_Z,
+      earRZ: earR_Z
+    }
+  };
+}
+
+/**
+ * 計算深度比率 — 只有真 3D 才能測量的比率
+ * 所有值已 IPD 歸一化（IPD = 1.0）
+ */
+function computeDepthRatios(model) {
+  var m = model;
+
+  // 輔助：兩點間 3D 距離（已 IPD 歸一化）
+  function d3n(a, b) {
+    return Math.sqrt(Math.pow(a.x-b.x,2) + Math.pow(a.y-b.y,2) + Math.pow(a.z-b.z,2));
+  }
+
+  // 參考平面：用眼窩外角定義（骨骼固定點）
+  var eyeL = m[33], eyeR = m[263];
+  var eyePlaneZ = (eyeL.z + eyeR.z) / 2;
+
+  // 耳朵平面（臉部最側面）
+  var earL = m[234], earR = m[454];
+  var earPlaneZ = (earL.z + earR.z) / 2;
+
+  // 顴骨
+  var cheekL = m[93], cheekR = m[323];
+
+  var ratios = {};
+
+  // D01: 鼻尖凸出 — 鼻尖(lm[1]) 相對於眼窩平面
+  ratios.D01_nose_protrusion = Math.abs(m[1].z - eyePlaneZ);
+
+  // D02: 鼻樑深度 — nasion(lm[6]) 相對於眼窩平面
+  ratios.D02_nasion_depth = Math.abs(m[6].z - eyePlaneZ);
+
+  // D03: 眼窩凹陷 — 眉骨(lm[66]+lm[296]) 相對於眼窩外角
+  // 眉骨在眼窩外角前面 → 正值 = 眼窩凹陷
+  var browL = m[66], browR = m[296];
+  var browZ = (browL.z + browR.z) / 2;
+  ratios.D03_orbital_depth = Math.abs(browZ - eyePlaneZ);
+
+  // D04: 顴骨突出 — 顴骨(lm[93]+lm[323]) 相對於眼窩平面
+  // 顴骨通常比眼窩更突出（Z 更小/更前面）
+  ratios.D04_cheekbone = Math.abs((cheekL.z + cheekR.z)/2 - eyePlaneZ);
+
+  // D05: 額頭弧度 — 額頭中心(lm[10]) vs 額頭兩側(lm[54]+lm[284]) 的 Z 差
+  var forehead = m[10], foreheadL = m[54], foreheadR = m[284];
+  ratios.D05_forehead_curve = Math.abs(forehead.z - (foreheadL.z + foreheadR.z)/2);
+
+  // D06: 下巴突出 — 下巴(lm[152]) 相對於眼窩平面
+  var chin = m[152];
+  ratios.D06_chin_protrusion = Math.abs(chin.z - eyePlaneZ);
+
+  // D07: 鼻子長度 3D（nasion lm[6] → 鼻下 lm[2]，含深度）
+  ratios.D07_nose_length_3d = d3n(m[6], m[2]);
+
+  // D08: 眼窩內角到鼻樑 3D（lm[133] → lm[6]）
+  ratios.D08_orbital_nasion_3d = d3n(m[133], m[6]);
+
+  // D09: 臉部側面深度 — 顴骨到耳朵的 3D 距離（左右平均）
+  ratios.D09_face_side_depth = (d3n(cheekL, earL) + d3n(cheekR, earR)) / 2;
+
+  // D10: 鼻翼寬度 3D（lm[48] → lm[278]）
+  ratios.D10_alar_width_3d = d3n(m[48], m[278]);
+
+  // D11: 臉部整體深度 — 鼻尖到耳朵平面
+  ratios.D11_face_depth = Math.abs(m[1].z - earPlaneZ);
+
+  // D12: 顴骨間距 3D（lm[93] → lm[323]）
+  ratios.D12_bizygomatic_3d = d3n(cheekL, cheekR);
+
+  return ratios;
+}
+
+// ============================================================
 // 3D FACE PSEUDO-COLOR VISUALIZATION
 // ============================================================
 
@@ -802,12 +1291,273 @@ function render3DFaceViews(model) {
   draw3DFace(model, 'face3d-front', 0, 0);
   draw3DFace(model, 'face3d-side', Math.PI / 5, 0);
   draw3DFace(model, 'face3d-top', 0, -Math.PI / 3);
+
+  // Also render interactive point cloud
+  renderInteractivePointCloud(model);
 }
 
 // ============================================================
-// CAPTURE FRAME (any angle)
+// INTERACTIVE 3D POINT CLOUD VIEWER — drag to rotate
 // ============================================================
-function captureFrameAny() {
+var pcModel = null;
+var pcRotY = -0.3, pcRotX = 0.2;
+var pcDragging = false, pcLastX = 0, pcLastY = 0;
+var pcShowWireframe = true, pcShowLabels = true;
+
+// Key landmark labels
+var PC_LABELS = {
+  1: 'Nose tip', 6: 'Nasion', 10: 'Forehead', 152: 'Chin',
+  33: 'Eye L out', 133: 'Eye L in', 263: 'Eye R out', 362: 'Eye R in',
+  234: 'Face L', 454: 'Face R', 93: 'Cheek L', 323: 'Cheek R',
+  48: 'Alar L', 278: 'Alar R', 66: 'Brow L', 296: 'Brow R',
+  61: 'Mouth L', 291: 'Mouth R'
+};
+
+function renderInteractivePointCloud(model) {
+  pcModel = model;
+  var box = document.getElementById('pointcloud-box');
+  box.style.display = 'block';
+
+  var canvas = document.getElementById('pointcloud-canvas');
+
+  // Mouse events
+  canvas.onmousedown = function(e) { pcDragging = true; pcLastX = e.clientX; pcLastY = e.clientY; };
+  canvas.onmousemove = function(e) {
+    if (!pcDragging) return;
+    pcRotY += (e.clientX - pcLastX) * 0.01;
+    pcRotX += (e.clientY - pcLastY) * 0.01;
+    pcRotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, pcRotX));
+    pcLastX = e.clientX; pcLastY = e.clientY;
+    pcRedraw();
+  };
+  canvas.onmouseup = function() { pcDragging = false; };
+  canvas.onmouseleave = function() { pcDragging = false; };
+
+  // Touch events
+  canvas.ontouchstart = function(e) {
+    e.preventDefault();
+    pcDragging = true;
+    pcLastX = e.touches[0].clientX; pcLastY = e.touches[0].clientY;
+  };
+  canvas.ontouchmove = function(e) {
+    e.preventDefault();
+    if (!pcDragging) return;
+    pcRotY += (e.touches[0].clientX - pcLastX) * 0.01;
+    pcRotX += (e.touches[0].clientY - pcLastY) * 0.01;
+    pcRotX = Math.max(-Math.PI/2, Math.min(Math.PI/2, pcRotX));
+    pcLastX = e.touches[0].clientX; pcLastY = e.touches[0].clientY;
+    pcRedraw();
+  };
+  canvas.ontouchend = function() { pcDragging = false; };
+
+  pcRedraw();
+}
+
+function pcResetView() { pcRotY = -0.3; pcRotX = 0.2; pcRedraw(); }
+function pcToggleWireframe() { pcShowWireframe = !pcShowWireframe; pcRedraw(); }
+function pcToggleLabels() { pcShowLabels = !pcShowLabels; pcRedraw(); }
+
+function pcRedraw() {
+  if (!pcModel) return;
+  var canvas = document.getElementById('pointcloud-canvas');
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+  var model = pcModel;
+  var ptSize = parseInt(document.getElementById('pc-ptsize').value) || 3;
+
+  ctx.fillStyle = '#08080c';
+  ctx.fillRect(0, 0, W, H);
+
+  if (!model || model.length < 468) return;
+
+  // Rotate all points
+  var cosY = Math.cos(pcRotY), sinY = Math.sin(pcRotY);
+  var cosX = Math.cos(pcRotX), sinX = Math.sin(pcRotX);
+  var pts = [];
+  for (var i = 0; i < model.length; i++) {
+    var rx = model[i].x * cosY + model[i].z * sinY;
+    var ry = model[i].y;
+    var rz = -model[i].x * sinY + model[i].z * cosY;
+    var ry2 = ry * cosX - rz * sinX;
+    var rz2 = ry * sinX + rz * cosX;
+    pts.push({ x: rx, y: ry2, z: rz2, idx: i });
+  }
+
+  // Find bounds
+  var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  var minZ = Infinity, maxZ = -Infinity;
+  for (var i = 0; i < pts.length; i++) {
+    if (pts[i].x < minX) minX = pts[i].x;
+    if (pts[i].x > maxX) maxX = pts[i].x;
+    if (pts[i].y < minY) minY = pts[i].y;
+    if (pts[i].y > maxY) maxY = pts[i].y;
+    if (pts[i].z < minZ) minZ = pts[i].z;
+    if (pts[i].z > maxZ) maxZ = pts[i].z;
+  }
+
+  var margin = 40;
+  var rangeX = maxX - minX || 1, rangeY = maxY - minY || 1, rangeZ = maxZ - minZ || 1;
+  var scale = Math.min((W - 2*margin) / rangeX, (H - 2*margin) / rangeY);
+  var offX = (W - rangeX * scale) / 2;
+  var offY = (H - rangeY * scale) / 2;
+
+  function proj(idx) {
+    return {
+      px: offX + (pts[idx].x - minX) * scale,
+      py: offY + (pts[idx].y - minY) * scale,
+      depth: (pts[idx].z - minZ) / rangeZ
+    };
+  }
+
+  // Draw wireframe contours
+  if (pcShowWireframe) {
+    ctx.lineWidth = 0.6;
+    ctx.globalAlpha = 0.25;
+    for (var ci = 0; ci < ALL_CONTOURS.length; ci++) {
+      var contour = ALL_CONTOURS[ci];
+      ctx.beginPath();
+      for (var j = 0; j < contour.length; j++) {
+        if (contour[j] >= pts.length) continue;
+        var p = proj(contour[j]);
+        if (j === 0) ctx.moveTo(p.px, p.py);
+        else ctx.lineTo(p.px, p.py);
+      }
+      ctx.strokeStyle = '#666';
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1.0;
+  }
+
+  // Sort by depth (far first = painter's algorithm)
+  var indices = [];
+  for (var i = 0; i < pts.length; i++) indices.push(i);
+  indices.sort(function(a, b) { return pts[a].z - pts[b].z; });
+
+  // Draw points (support RGB mode for dense point cloud)
+  var isDenseMode = model[0] && model[0].isDense;
+  for (var ii = 0; ii < indices.length; ii++) {
+    var idx = indices[ii];
+    var p = proj(idx);
+    var t = 1 - p.depth; // invert: near = red
+    var cr, cg, cb;
+    if (isDenseMode && model[idx].r !== undefined) {
+      cr = model[idx].r; cg = model[idx].g; cb = model[idx].b;
+    } else {
+      var c = jetColor(t);
+      cr = c[0]; cg = c[1]; cb = c[2];
+    }
+    var r = isDenseMode ? ptSize * 0.7 : ptSize * (0.5 + t * 0.8);
+
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgb(' + cr + ',' + cg + ',' + cb + ')';
+    ctx.fill();
+  }
+
+  // Draw labels for key landmarks
+  if (pcShowLabels) {
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    for (var lmIdx in PC_LABELS) {
+      var li = parseInt(lmIdx);
+      if (li >= pts.length) continue;
+      var p = proj(li);
+      var t = 1 - p.depth;
+      var c = jetColor(t);
+
+      // Label line
+      ctx.strokeStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',0.5)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(p.px, p.py);
+      ctx.lineTo(p.px + 12, p.py - 8);
+      ctx.stroke();
+
+      // Label text
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.fillText(PC_LABELS[lmIdx], p.px + 14, p.py - 4);
+
+      // Z value
+      ctx.fillStyle = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',0.8)';
+      ctx.fillText('z=' + model[li].z.toFixed(2), p.px + 14, p.py + 5);
+    }
+  }
+
+  // Axis indicator (bottom-left)
+  var ax = 50, ay = H - 50, al = 30;
+  var axes = [
+    { dx: al * cosY, dy: 0, label: 'X', color: '#f44' },
+    { dx: 0, dy: -al, label: 'Y', color: '#0f0' },
+    { dx: -al * sinY, dy: al * sinX * cosY, label: 'Z', color: '#44f' }
+  ];
+  for (var ai = 0; ai < axes.length; ai++) {
+    ctx.strokeStyle = axes[ai].color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax + axes[ai].dx, ay + axes[ai].dy);
+    ctx.stroke();
+    ctx.fillStyle = axes[ai].color;
+    ctx.font = '10px monospace';
+    ctx.fillText(axes[ai].label, ax + axes[ai].dx + 4, ay + axes[ai].dy + 4);
+  }
+
+  // Info
+  var info = document.getElementById('pc-info');
+  info.textContent = pts.length + ' points | Rot: Y=' + (pcRotY * 180 / Math.PI).toFixed(0)
+    + '\u00b0 X=' + (pcRotX * 180 / Math.PI).toFixed(0) + '\u00b0'
+    + ' | Z: ' + minZ.toFixed(2) + '~' + maxZ.toFixed(2)
+    + (isDenseMode ? ' | RGB' : ' | Depth');
+}
+
+// ============================================================
+// CAPTURE FRAME (any angle) + QUALITY SCORING
+// ============================================================
+
+/** EAR (Eye Aspect Ratio) — 低於 0.18 = 眨眼中 */
+function computeEAR(lm) {
+  // Left eye: 33(outer), 133(inner), 159(top), 145(bottom), 158(top2), 153(bottom2)
+  var lTop = Math.abs(lm[159].y - lm[145].y);
+  var lTop2 = Math.abs(lm[158].y - lm[153].y);
+  var lWidth = Math.abs(lm[33].x - lm[133].x);
+  var leftEAR = lWidth > 0.001 ? (lTop + lTop2) / (2 * lWidth) : 0;
+
+  // Right eye: 263(outer), 362(inner), 386(top), 374(bottom), 385(top2), 380(bottom2)
+  var rTop = Math.abs(lm[386].y - lm[374].y);
+  var rTop2 = Math.abs(lm[385].y - lm[380].y);
+  var rWidth = Math.abs(lm[263].x - lm[362].x);
+  var rightEAR = rWidth > 0.001 ? (rTop + rTop2) / (2 * rWidth) : 0;
+
+  return (leftEAR + rightEAR) / 2;
+}
+
+/** Landmark 分佈品質 — 檢查臉部 landmark 合理性 */
+function computeLandmarkQuality(lm) {
+  // IPD (interpupillary distance) — 太小表示臉太遠或偵測不佳
+  var ipd = Math.sqrt(Math.pow(lm[33].x - lm[263].x, 2) + Math.pow(lm[33].y - lm[263].y, 2));
+  if (ipd < 0.05) return 0; // 臉太小
+
+  // 臉部高度
+  var fh = Math.abs(lm[10].y - lm[152].y);
+  if (fh < 0.08) return 0;
+
+  // 臉部寬高比合理性 (0.6~1.0 正常)
+  var fw = Math.abs(lm[234].x - lm[454].x);
+  var ratio = fw / (fh || 0.01);
+  if (ratio < 0.4 || ratio > 1.5) return 0.3;
+
+  // IPD 大小分數 (越大越清楚)
+  var ipdScore = Math.min(ipd / 0.20, 1.0); // 0.20 以上滿分
+
+  // 綜合品質
+  return ipdScore;
+}
+
+/**
+ * 擷取一幀 + 品質評分
+ * @returns { landmarks, matrix, yaw, quality, ear } or null
+ */
+function captureFrameWithQuality() {
   if (!ready || !fl) return null;
   var mp = fl.detect(vid);
   if (!mp.faceLandmarks || !mp.faceLandmarks.length) return null;
@@ -822,7 +1572,89 @@ function captureFrameAny() {
   if (eyeSpan < 0.01) return null;
   var yaw = (lm[1].x - eyeMidX) / eyeSpan;
 
-  return { landmarks: lm, matrix: matrix, yaw: yaw };
+  var ear = computeEAR(lm);
+  var lmQuality = computeLandmarkQuality(lm);
+
+  // 綜合品質分數 (0~1)
+  // - EAR 正常 (>0.18) 加分，眨眼中大幅扣分
+  // - landmark 品質
+  var earScore = ear >= 0.18 ? 1.0 : ear >= 0.12 ? 0.3 : 0.0;
+  var quality = earScore * 0.4 + lmQuality * 0.6;
+
+  return { landmarks: lm, matrix: matrix, yaw: yaw, quality: quality, ear: ear };
+}
+
+// 向下相容
+function captureFrameAny() {
+  var f = captureFrameWithQuality();
+  return f ? { landmarks: f.landmarks, matrix: f.matrix, yaw: f.yaw } : null;
+}
+
+/**
+ * 事後篩選 — 從大量幀中每 zone 挑最佳 N 幀
+ * @param allRawFrames 全部擷取的幀 (帶 quality 分數)
+ * @param zoneTargets 每 zone 目標幀數 [4,4,6,4,4]
+ * @returns { selected: frame[], zoneCounts: number[], stats }
+ */
+function selectBestFrames(allRawFrames, zoneTargets) {
+  // 按 zone 分組
+  var buckets = [[], [], [], [], []];
+  for (var i = 0; i < allRawFrames.length; i++) {
+    var f = allRawFrames[i];
+    var zone = getYawZone(f.yaw);
+    buckets[zone].push(f);
+  }
+
+  var selected = [];
+  var zoneCounts = [0, 0, 0, 0, 0];
+  var zoneStats = [];
+
+  for (var z = 0; z < 5; z++) {
+    var bucket = buckets[z];
+    var target = zoneTargets[z];
+
+    // 按品質降序排列
+    bucket.sort(function(a, b) { return b.quality - a.quality; });
+
+    // 過濾眨眼幀 (EAR < 0.15)
+    var nonBlink = bucket.filter(function(f) { return f.ear >= 0.15; });
+
+    // 如果非眨眼幀不夠，也接受低 EAR 幀（但排在後面）
+    var pool = nonBlink.length >= target ? nonBlink : bucket;
+
+    // 從 pool 中挑選，盡量分散 yaw（避免同角度重複）
+    var picked = [];
+    if (pool.length <= target) {
+      picked = pool.slice();
+    } else {
+      // 先按品質排，取前 target * 2 候選，再從中均勻取樣
+      var candidates = pool.slice(0, Math.min(pool.length, target * 3));
+      // 按 yaw 排序，均勻取樣
+      candidates.sort(function(a, b) { return a.yaw - b.yaw; });
+      var step = candidates.length / target;
+      for (var j = 0; j < target; j++) {
+        var idx = Math.min(Math.floor(j * step), candidates.length - 1);
+        picked.push(candidates[idx]);
+      }
+    }
+
+    for (var p = 0; p < picked.length; p++) {
+      selected.push(picked[p]);
+    }
+    zoneCounts[z] = picked.length;
+
+    zoneStats.push({
+      zone: YAW_ZONES[z].name,
+      total: bucket.length,
+      nonBlink: nonBlink.length,
+      selected: picked.length,
+      avgQuality: picked.length > 0
+        ? (picked.reduce(function(s, f) { return s + f.quality; }, 0) / picked.length).toFixed(3)
+        : '0'
+    });
+  }
+
+  return { selected: selected, zoneCounts: zoneCounts, zoneStats: zoneStats };
 }
 
 // ============================================================
@@ -852,17 +1684,18 @@ function updateYawUI(yaw, zoneCounts) {
   var pct = Math.max(0, Math.min(100, (1 - (yaw + 0.4) / 0.8) * 100));
   document.getElementById('yaw-cursor').style.left = 'calc(' + pct + '% - 2px)';
 
-  // Update counts
+  // Update counts (顯示各 zone 的原始擷取數)
   var leftCount = (zoneCounts[0] || 0) + (zoneCounts[1] || 0);
   var centerCount = zoneCounts[2] || 0;
   var rightCount = (zoneCounts[3] || 0) + (zoneCounts[4] || 0);
+  var totalCount = leftCount + centerCount + rightCount;
 
   var lcEl = document.getElementById('yc-left');
   var ccEl = document.getElementById('yc-center');
   var rcEl = document.getElementById('yc-right');
 
   lcEl.textContent = '\u2190 Left: ' + leftCount;
-  ccEl.textContent = 'Center: ' + centerCount;
+  ccEl.textContent = 'Center: ' + centerCount + ' | Total: ' + totalCount;
   rcEl.textContent = 'Right: ' + rightCount + ' \u2192';
 
   lcEl.className = leftCount >= 6 ? 'full' : '';
@@ -892,96 +1725,106 @@ async function do3DVideoScan(silent) {
     for (var i = 0; i < oldDots.length; i++) oldDots[i].remove();
   }
 
-  var allFrames = [];
-  var zoneCounts = [0, 0, 0, 0, 0];
-  var zoneFrames = [[], [], [], [], []];
-  var lastCaptureTime = 0;
-  var CAPTURE_INTERVAL = 120;  // min ms between captures in same zone
-  var TIMEOUT = 15000;         // 15s max scan time
+  // ================================================================
+  // Phase 1: 全速擷取 — 不限間隔，每幀都存
+  // ================================================================
+  var allRawFrames = [];
+  var rawZoneCounts = [0, 0, 0, 0, 0];
+  var SCAN_DURATION = 8000;    // 8 秒掃描時間
+  var MIN_SCAN_TIME = 4000;    // 最少 4 秒
+  var TIMEOUT = 15000;         // 15s 硬超時
   var startTime = Date.now();
+  var noFaceFrames = 0;
 
-  st('\uD83C\uDFA5 Slowly turn your head: LEFT \u2192 CENTER \u2192 RIGHT', 'ld');
+  st('\uD83C\uDFA5 Slowly turn: RIGHT \u2192 CENTER \u2192 LEFT (8 sec)', 'ld');
 
-  // Minimum requirements: center >= 4 AND (left >= 4 OR right >= 4)
-  function hasEnoughCoverage() {
-    var leftTotal = zoneCounts[0] + zoneCounts[1];
-    var rightTotal = zoneCounts[3] + zoneCounts[4];
-    var center = zoneCounts[2];
-    return center >= 4 && leftTotal >= 4 && rightTotal >= 4;
+  // 最低覆蓋：每個大區至少有一些幀
+  function hasMinCoverage() {
+    var leftTotal = rawZoneCounts[0] + rawZoneCounts[1];
+    var rightTotal = rawZoneCounts[3] + rawZoneCounts[4];
+    var center = rawZoneCounts[2];
+    return center >= 6 && leftTotal >= 6 && rightTotal >= 6;
   }
 
-  // Main scan loop
+  // Main capture loop — 全速，每幀都拍
   while (Date.now() - startTime < TIMEOUT) {
-    var frame = captureFrameAny();
+    var frame = captureFrameWithQuality();
+    var elapsed = Date.now() - startTime;
 
     if (!frame) {
-      if (!silent) updateYawUI(0, zoneCounts);
-      await sleep(60);
+      noFaceFrames++;
+      if (!silent) updateYawUI(0, rawZoneCounts);
+      await sleep(30); // 短等待，盡量快
       continue;
     }
 
-    if (!silent) updateYawUI(frame.yaw, zoneCounts);
-
-    // Determine zone
+    // 存入原始幀池
+    allRawFrames.push(frame);
     var zone = getYawZone(frame.yaw);
-    var now = Date.now();
+    rawZoneCounts[zone]++;
 
-    // Capture if zone not full and enough time since last capture
-    if (zoneCounts[zone] < YAW_ZONES[zone].target && (now - lastCaptureTime) >= CAPTURE_INTERVAL) {
-      allFrames.push(frame);
-      zoneCounts[zone]++;
-      zoneFrames[zone].push(frame);
-      lastCaptureTime = now;
-
-      if (!silent) {
-        addYawDot(frame.yaw, YAW_ZONES[zone].color);
-        updateYawUI(frame.yaw, zoneCounts);
-      }
-
-      var total = allFrames.length;
-      lg('[scan] frame ' + total + ' zone=' + YAW_ZONES[zone].name + ' yaw=' + frame.yaw.toFixed(3));
-
-      if (!silent) {
-        document.getElementById('yaw-title').textContent =
-          'Scanning... ' + total + ' frames captured';
-      }
-
-      // Check if enough
-      if (hasEnoughCoverage()) {
-        // Continue a bit more for extra coverage, up to 2 more seconds
-        var extraEnd = Date.now() + 2000;
-        while (Date.now() < extraEnd) {
-          var ef = captureFrameAny();
-          if (ef) {
-            if (!silent) updateYawUI(ef.yaw, zoneCounts);
-            var ez = getYawZone(ef.yaw);
-            if (zoneCounts[ez] < YAW_ZONES[ez].target && (Date.now() - lastCaptureTime) >= CAPTURE_INTERVAL) {
-              allFrames.push(ef);
-              zoneCounts[ez]++;
-              lastCaptureTime = Date.now();
-              if (!silent) addYawDot(ef.yaw, YAW_ZONES[ez].color);
-            }
-          }
-          await sleep(60);
-        }
-        break;
-      }
+    if (!silent) {
+      updateYawUI(frame.yaw, rawZoneCounts);
+      addYawDot(frame.yaw, YAW_ZONES[zone].color);
+      document.getElementById('yaw-title').textContent =
+        'Capturing... ' + allRawFrames.length + ' frames (' + (elapsed / 1000).toFixed(1) + 's)';
     }
 
-    await sleep(60);
+    // 時間到 + 覆蓋足夠 → 結束
+    if (elapsed >= MIN_SCAN_TIME && hasMinCoverage() && elapsed >= SCAN_DURATION) {
+      break;
+    }
+
+    // 不 sleep 或極短 sleep — 讓 MediaPipe detect() 決定節奏
+    await sleep(10);
+  }
+
+  var totalRaw = allRawFrames.length;
+  var scanTime = ((Date.now() - startTime) / 1000).toFixed(1);
+  var fps = (totalRaw / ((Date.now() - startTime) / 1000)).toFixed(1);
+
+  lg('[scan] Raw capture done: ' + totalRaw + ' frames in ' + scanTime + 's (' + fps + ' FPS)');
+  lg('[scan] Raw zones: FL=' + rawZoneCounts[0] + ' L=' + rawZoneCounts[1] + ' C=' + rawZoneCounts[2] + ' R=' + rawZoneCounts[3] + ' FR=' + rawZoneCounts[4]);
+  lg('[scan] No-face frames: ' + noFaceFrames);
+
+  if (!silent) {
+    document.getElementById('yaw-title').textContent =
+      'Captured ' + totalRaw + ' frames in ' + scanTime + 's — selecting best...';
+  }
+
+  // ================================================================
+  // Phase 2: 事後篩選 — 每 zone 挑最佳幀
+  // ================================================================
+  var zoneTargets = [4, 4, 6, 4, 4]; // 每 zone 要幾幀
+  var selection = selectBestFrames(allRawFrames, zoneTargets);
+  var allFrames = selection.selected;
+  var zoneCounts = selection.zoneCounts;
+
+  lg('[select] Selected ' + allFrames.length + ' frames: FL=' + zoneCounts[0] + ' L=' + zoneCounts[1] + ' C=' + zoneCounts[2] + ' R=' + zoneCounts[3] + ' FR=' + zoneCounts[4]);
+  for (var si = 0; si < selection.zoneStats.length; si++) {
+    var zs = selection.zoneStats[si];
+    lg('[select] ' + zs.zone + ': ' + zs.total + ' raw → ' + zs.nonBlink + ' non-blink → ' + zs.selected + ' selected (avg Q=' + zs.avgQuality + ')');
   }
 
   var total = allFrames.length;
-  if (!silent) updateYawUI(0, zoneCounts);
 
-  if (total < 8 || zoneCounts[2] < 3) {
-    st('Scan failed: not enough frames (' + total + '). Keep face visible and turn slowly.', 'er');
+  // 檢查覆蓋是否足夠
+  var centerOk = zoneCounts[2] >= 3;
+  var leftOk = (zoneCounts[0] + zoneCounts[1]) >= 3;
+  var rightOk = (zoneCounts[3] + zoneCounts[4]) >= 3;
+
+  if (total < 8 || !centerOk) {
+    var failMsg = 'Scan failed: ' + totalRaw + ' raw → ' + total + ' selected.';
+    if (!centerOk) failMsg += ' Not enough center frames.';
+    if (!leftOk) failMsg += ' Need more left-turn frames.';
+    if (!rightOk) failMsg += ' Need more right-turn frames.';
+    st(failMsg, 'er');
     if (!silent) yawEl.style.display = 'none';
     enableButtons();
     return null;
   }
 
-  st('\u2699 Building 3D model from ' + total + ' frames...', 'ld');
+  st('\u2699 Building 3D model from ' + total + ' best frames (out of ' + totalRaw + ' raw)...', 'ld');
 
   // Build 3D model
   var model3D = build3DModel(allFrames);
@@ -1076,7 +1919,15 @@ async function do3DVideoScan(silent) {
     hash: hash,
     hashInput: hashInput,
     totalFrames: total,
+    totalRawFrames: totalRaw,
     zoneCounts: zoneCounts.slice(),
+    captureStats: {
+      totalRaw: totalRaw,
+      scanTime: scanTime,
+      fps: fps,
+      noFaceFrames: noFaceFrames,
+      zoneStats: selection ? selection.zoneStats : null
+    },
     frontalBins: frontalBins,
     frontalRatios: frontalRatios,
     frontalMatchCount: frontalMatchCount,
@@ -1087,7 +1938,7 @@ async function do3DVideoScan(silent) {
 
   if (!silent) {
     display3DResult(result);
-    st('\uD83E\uDDE9 3D Scan complete \u2014 ' + total + ' frames \u2192 ' + WHITELIST_RATIOS.length + ' ratios \u2192 hash: ' + hash.substring(0, 16) + '...', 'ok');
+    st('\uD83E\uDDE9 3D Scan: ' + totalRaw + ' captured \u2192 ' + total + ' selected \u2192 ' + WHITELIST_RATIOS.length + ' ratios \u2192 hash: ' + hash.substring(0, 16) + '...', 'ok');
   }
 
   enableButtons();
@@ -1100,11 +1951,32 @@ function display3DResult(result) {
 
   var zn = result.zoneCounts;
   var html = '<div style="color:#a855f7;font-weight:700;margin-bottom:8px">'
-    + '\uD83E\uDDE9 3D Registration \u2014 ' + result.totalFrames + ' frames from video scan</div>';
+    + '\uD83E\uDDE9 3D Registration \u2014 ' + result.totalFrames + ' selected from '
+    + (result.totalRawFrames || result.totalFrames) + ' captured</div>';
 
-  html += '<div style="font-size:.7em;color:#888;margin-bottom:8px">'
-    + 'Far-L: ' + zn[0] + ' | L: ' + zn[1] + ' | Center: ' + zn[2] + ' | R: ' + zn[3] + ' | Far-R: ' + zn[4]
-    + '</div>';
+  // 擷取統計
+  if (result.captureStats) {
+    var cs = result.captureStats;
+    html += '<div style="font-size:.7em;color:#00e5ff;margin-bottom:4px;padding:6px;background:#0a0a1a;border-radius:4px">'
+      + '\uD83D\uDCF7 Capture: ' + cs.totalRaw + ' frames in ' + cs.scanTime + 's (' + cs.fps + ' FPS)'
+      + ' | No-face: ' + cs.noFaceFrames + '</div>';
+
+    if (cs.zoneStats) {
+      html += '<div style="font-size:.6em;color:#888;margin-bottom:8px">';
+      for (var si = 0; si < cs.zoneStats.length; si++) {
+        var zs = cs.zoneStats[si];
+        var selColor = zs.selected >= 3 ? '#0f0' : zs.selected >= 1 ? '#ffc107' : '#f44';
+        html += '<span style="margin-right:8px">' + zs.zone + ': '
+          + zs.total + '\u2192<span style="color:' + selColor + '">' + zs.selected + '</span>'
+          + ' (Q=' + zs.avgQuality + ')</span>';
+      }
+      html += '</div>';
+    }
+  } else {
+    html += '<div style="font-size:.7em;color:#888;margin-bottom:8px">'
+      + 'Far-L: ' + zn[0] + ' | L: ' + zn[1] + ' | Center: ' + zn[2] + ' | R: ' + zn[3] + ' | Far-R: ' + zn[4]
+      + '</div>';
+  }
 
   // Ratio detail table: 3D vs Frontal comparison
   html += '<table style="width:100%;font-size:.65em;border-collapse:collapse">';
@@ -1153,7 +2025,7 @@ function display3DResult(result) {
   box.className = '';
   document.getElementById('uid-hash').textContent = result.hash;
   document.getElementById('uid-stats').innerHTML =
-    '<span>3D Registration | ' + result.totalFrames + ' frames</span>'
+    '<span>3D | ' + (result.totalRawFrames || result.totalFrames) + ' captured \u2192 ' + result.totalFrames + ' selected</span>'
     + '<span>Ratios: ' + WHITELIST_RATIOS.length + '</span>'
     + '<span>BW: ' + BIN_WIDTH + '</span>';
 }
@@ -1205,8 +2077,10 @@ async function do3DMultiTest() {
 
     var isMatch = r === 0 || result.hash === results[0].hash;
     rowDiv.className = 'round-row ' + (isMatch ? 'match' : 'diff');
+    var rawCount = result.totalRawFrames || result.totalFrames;
     rowDiv.innerHTML = '<span class="rn">Round ' + (r+1) + '</span>'
-      + '<span class="rh">' + result.hash.substring(0, 24) + '...</span>'
+      + '<span style="font-size:.7em;color:#555;min-width:70px">' + rawCount + '\u2192' + result.totalFrames + '</span>'
+      + '<span class="rh">' + result.hash.substring(0, 20) + '...</span>'
       + '<span style="color:' + (isMatch ? '#0f0' : '#f44') + '">' + (r === 0 ? 'REF' : isMatch ? '\u2705' : '\u274c') + '</span>';
 
     if (r < NUM_ROUNDS - 1) {
@@ -1278,6 +2152,666 @@ async function do3DMultiTest() {
 
   st(hashCount === 1 ? '\uD83E\uDDE9 3D Video: ALL IDENTICAL \u2705' : '\uD83E\uDDE9 3D: ' + hashCount + ' hashes, ' + drifterKeys.length + ' drifters', hashCount === 1 ? 'ok' : 'er');
   enableButtons();
+}
+
+// ============================================================
+// DENSE 3D — Optical Flow SfM (Structure from Motion)
+// ============================================================
+
+/**
+ * 擷取全圖 grayscale + RGB
+ */
+function captureFullFrame(video) {
+  var vw = video.videoWidth, vh = video.videoHeight;
+  if (vw < 10 || vh < 10) return null;
+  var c = makeCanvas(vw, vh);
+  var ctx = c.getContext('2d');
+  ctx.drawImage(video, 0, 0);
+  var imgData = ctx.getImageData(0, 0, vw, vh);
+  var px = imgData.data;
+  var n = vw * vh;
+  var gray = new Uint8Array(n);
+  var rgb = new Uint8Array(n * 3);
+  for (var i = 0; i < n; i++) {
+    gray[i] = Math.round(0.299*px[i*4] + 0.587*px[i*4+1] + 0.114*px[i*4+2]);
+    rgb[i*3]=px[i*4]; rgb[i*3+1]=px[i*4+1]; rgb[i*3+2]=px[i*4+2];
+  }
+  return { gray: gray, rgb: rgb, w: vw, h: vh };
+}
+
+/**
+ * Lucas-Kanade Optical Flow — 追蹤單個點從 imgA → imgB
+ *
+ * @param grayA, grayB grayscale arrays
+ * @param w, h image dimensions
+ * @param px, py point position in A (pixels)
+ * @param winSize window size (odd, e.g. 15)
+ * @param maxIter max iterations
+ * @returns { x, y } new position in B, or null if tracking failed
+ */
+function lkTrackPoint(grayA, grayB, w, h, px, py, winSize, maxIter) {
+  var half = Math.floor(winSize / 2);
+  if (px-half<0||px+half>=w||py-half<0||py+half>=h) return null;
+
+  // Compute image gradients at point in A (Ix, Iy)
+  // and the spatial gradient matrix G = [[sum(Ix²), sum(IxIy)], [sum(IxIy), sum(Iy²)]]
+  var sumIxx = 0, sumIyy = 0, sumIxy = 0;
+  var IxArr = [], IyArr = [], IArr = [];
+
+  for (var dy = -half; dy <= half; dy++) {
+    for (var dx = -half; dx <= half; dx++) {
+      var xi = px + dx, yi = py + dy;
+      // Central difference gradient
+      var Ix = (grayA[yi * w + (xi+1)] - grayA[yi * w + (xi-1)]) * 0.5;
+      var Iy = (grayA[(yi+1) * w + xi] - grayA[(yi-1) * w + xi]) * 0.5;
+      IxArr.push(Ix);
+      IyArr.push(Iy);
+      IArr.push(grayA[yi * w + xi]);
+      sumIxx += Ix * Ix;
+      sumIyy += Iy * Iy;
+      sumIxy += Ix * Iy;
+    }
+  }
+
+  // Check if G is invertible (eigenvalue check → good feature to track)
+  var det = sumIxx * sumIyy - sumIxy * sumIxy;
+  if (Math.abs(det) < 1) return null; // 太平坦或邊緣，無法追蹤
+
+  var minEig = 0.5 * (sumIxx + sumIyy - Math.sqrt((sumIxx-sumIyy)*(sumIxx-sumIyy) + 4*sumIxy*sumIxy));
+  if (minEig < 1) return null; // 不是好的特徵點
+
+  // Iterative LK
+  var ux = 0, uy = 0; // 累積位移
+
+  for (var iter = 0; iter < maxIter; iter++) {
+    // Compute temporal gradient (mismatch vector)
+    var sumIxt = 0, sumIyt = 0;
+    var idx = 0;
+    var valid = true;
+
+    for (var dy2 = -half; dy2 <= half; dy2++) {
+      for (var dx2 = -half; dx2 <= half; dx2++) {
+        var bxi = Math.round(px + dx2 + ux);
+        var byi = Math.round(py + dy2 + uy);
+        if (bxi<0||bxi>=w||byi<0||byi>=h) { valid = false; break; }
+
+        var It = grayB[byi * w + bxi] - IArr[idx];
+        sumIxt += IxArr[idx] * It;
+        sumIyt += IyArr[idx] * It;
+        idx++;
+      }
+      if (!valid) break;
+    }
+    if (!valid) return null;
+
+    // Solve G * [du, dv]^T = -[sumIxt, sumIyt]^T
+    var du = -(sumIyy * sumIxt - sumIxy * sumIyt) / det;
+    var dv = -(sumIxx * sumIyt - sumIxy * sumIxt) / det;
+
+    ux += du;
+    uy += dv;
+
+    if (du*du + dv*dv < 0.01) break; // 收斂
+  }
+
+  // 驗證：位移不該太大
+  if (Math.abs(ux) > winSize*2 || Math.abs(uy) > winSize*2) return null;
+
+  // 反向驗證（forward-backward check）
+  var bx = px + ux, by = py + uy;
+  if (bx<half||bx>=w-half||by<half||by>=h-half) return null;
+
+  return { x: px + ux, y: py + uy };
+}
+
+/**
+ * Dense 3D via Optical Flow SfM
+ *
+ * 1. 第一幀在臉上撒 dense grid
+ * 2. 連續幀 LK optical flow 追蹤
+ * 3. 追蹤成功的點有 N 幀 2D 軌跡
+ * 4. 多幀三角測量 → 3D
+ */
+async function doDense3D() {
+  if (!ready) return;
+
+  disableAllButtons();
+
+  var yawEl = document.getElementById('yaw-indicator');
+  yawEl.style.display = 'block';
+  var oldDots = yawEl.querySelectorAll('.yaw-dot');
+  for (var i = 0; i < oldDots.length; i++) oldDots[i].remove();
+
+  // ================================================================
+  // Phase 1: 連續擷取 RGB + landmarks + matrix
+  // ================================================================
+  var frames = [];
+  var rawZoneCounts = [0, 0, 0, 0, 0];
+  var SCAN_DURATION = 8000;
+  var TIMEOUT = 15000;
+  var startTime = Date.now();
+  var CAPTURE_INTERVAL = 150; // 150ms 間隔 ≈ 6-7 FPS（每幀存全圖）
+  var lastCapture = 0;
+
+  st('\u25C6 Dense 3D (Optical Flow): Slowly turn RIGHT \u2192 LEFT', 'ld');
+
+  while (Date.now() - startTime < TIMEOUT) {
+    var now = Date.now();
+    if (now - lastCapture < CAPTURE_INTERVAL) { await sleep(20); continue; }
+
+    var mp = fl.detect(vid);
+    if (!mp.faceLandmarks || !mp.faceLandmarks.length) { await sleep(30); continue; }
+
+    var lm = mp.faceLandmarks[0];
+    var matrix = (mp.facialTransformationMatrixes && mp.facialTransformationMatrixes.length > 0)
+      ? mp.facialTransformationMatrixes[0] : null;
+    if (!matrix) { await sleep(30); continue; }
+
+    var leX = (lm[33].x+lm[133].x)/2, reX = (lm[263].x+lm[362].x)/2;
+    var eyeMidX = (leX+reX)/2, eyeSpan = Math.abs(reX-leX);
+    if (eyeSpan < 0.01) { await sleep(30); continue; }
+    var yaw = (lm[1].x - eyeMidX) / eyeSpan;
+
+    var fullFrame = captureFullFrame(vid);
+    if (!fullFrame) { await sleep(30); continue; }
+
+    frames.push({ landmarks: lm, matrix: matrix, yaw: yaw, img: fullFrame });
+
+    var zone = getYawZone(yaw);
+    rawZoneCounts[zone]++;
+    lastCapture = now;
+
+    var elapsed = (now - startTime) / 1000;
+    updateYawUI(yaw, rawZoneCounts);
+    addYawDot(yaw, YAW_ZONES[zone].color);
+    document.getElementById('yaw-title').textContent =
+      '\u25C6 OF SfM: ' + frames.length + ' frames (' + elapsed.toFixed(1) + 's)';
+
+    var lT = rawZoneCounts[0]+rawZoneCounts[1], rT = rawZoneCounts[3]+rawZoneCounts[4];
+    if (elapsed >= 4 && rawZoneCounts[2] >= 2 && lT >= 2 && rT >= 2 && elapsed >= SCAN_DURATION) break;
+    await sleep(20);
+  }
+
+  lg('[OF-SfM] Captured ' + frames.length + ' frames');
+  if (frames.length < 6) {
+    st('Not enough frames: ' + frames.length, 'er');
+    enableButtons(); return;
+  }
+
+  // ================================================================
+  // Phase 2: 在第一幀的臉上撒 dense grid 特徵點
+  // ================================================================
+  st('\u25C6 Initializing feature points on face...', 'ld');
+  await sleep(30);
+
+  var refFrame = frames[0];
+  var refImg = refFrame.img;
+  var lm0 = refFrame.landmarks;
+
+  // 臉部區域（像素座標）
+  var fMinX = refImg.w, fMaxX = 0, fMinY = refImg.h, fMaxY = 0;
+  for (var li = 0; li < lm0.length; li++) {
+    var lpx = Math.round(lm0[li].x * refImg.w);
+    var lpy = Math.round(lm0[li].y * refImg.h);
+    if (lpx < fMinX) fMinX = lpx; if (lpx > fMaxX) fMaxX = lpx;
+    if (lpy < fMinY) fMinY = lpy; if (lpy > fMaxY) fMaxY = lpy;
+  }
+  var MGN = 15;
+  fMinX = Math.max(MGN, fMinX - 5); fMaxX = Math.min(refImg.w - MGN, fMaxX + 5);
+  fMinY = Math.max(MGN, fMinY - 5); fMaxY = Math.min(refImg.h - MGN, fMaxY + 5);
+
+  var GRID_STEP = 4;
+  var WIN_SIZE = 15;
+  var MAX_ITER = 15;
+
+  // 初始化追蹤點
+  var tracks = []; // { initX, initY, positions: [{x,y}], alive: true, r, g, b }
+  for (var gy = fMinY; gy < fMaxY; gy += GRID_STEP) {
+    for (var gx = fMinX; gx < fMaxX; gx += GRID_STEP) {
+      var pIdx = gy * refImg.w + gx;
+      tracks.push({
+        initX: gx, initY: gy,
+        positions: [{ x: gx, y: gy }],
+        alive: true,
+        r: refImg.rgb[pIdx*3], g: refImg.rgb[pIdx*3+1], b: refImg.rgb[pIdx*3+2]
+      });
+    }
+  }
+
+  lg('[OF-SfM] Initial points: ' + tracks.length + ' in region (' + fMinX + ',' + fMinY + ')-(' + fMaxX + ',' + fMaxY + ')');
+
+  // ================================================================
+  // Phase 3: 連續幀 LK optical flow 追蹤
+  // ================================================================
+  st('\u25C6 Tracking ' + tracks.length + ' points across ' + frames.length + ' frames...', 'ld');
+  await sleep(30);
+
+  for (var fi = 1; fi < frames.length; fi++) {
+    var prevImg = frames[fi-1].img;
+    var currImg = frames[fi].img;
+    var aliveCount = 0;
+
+    for (var ti = 0; ti < tracks.length; ti++) {
+      if (!tracks[ti].alive) continue;
+
+      var lastPos = tracks[ti].positions[tracks[ti].positions.length - 1];
+      var tracked = lkTrackPoint(
+        prevImg.gray, currImg.gray, prevImg.w, prevImg.h,
+        Math.round(lastPos.x), Math.round(lastPos.y),
+        WIN_SIZE, MAX_ITER
+      );
+
+      if (tracked) {
+        tracks[ti].positions.push({ x: tracked.x, y: tracked.y });
+        aliveCount++;
+      } else {
+        tracks[ti].alive = false;
+      }
+    }
+
+    if (fi % 5 === 0 || fi === frames.length - 1) {
+      lg('[OF-SfM] Frame ' + fi + '/' + (frames.length-1) + ': ' + aliveCount + ' alive');
+    }
+  }
+
+  var survivedTracks = tracks.filter(function(t) { return t.alive && t.positions.length >= 4; });
+  lg('[OF-SfM] Survived: ' + survivedTracks.length + '/' + tracks.length);
+
+  if (survivedTracks.length < 50) {
+    st('Too few tracked points: ' + survivedTracks.length, 'er');
+    enableButtons(); return;
+  }
+
+  // ================================================================
+  // Phase 4: 多幀三角測量 — 每個追蹤點用首幀+末幀+中間幀
+  // ================================================================
+  st('\u25C6 Triangulating ' + survivedTracks.length + ' points...', 'ld');
+  await sleep(30);
+
+  var fx = 0.87, fy = 0.87 * (refImg.h / refImg.w);
+  var cx = 0.5, cy = 0.5;
+  var camDist = 5.0;
+
+  // 選 3~5 個角度差大的 key frames 做三角測量
+  var keyFrameIndices = [0, Math.floor(frames.length/4), Math.floor(frames.length/2),
+                         Math.floor(frames.length*3/4), frames.length-1];
+  // 去重
+  keyFrameIndices = keyFrameIndices.filter(function(v,i,a) { return a.indexOf(v)===i; });
+
+  var keyRi = keyFrameIndices.map(function(fi2) {
+    return transposeR(extractRotation(frames[fi2].matrix));
+  });
+
+  var points3d = [];
+  for (var si = 0; si < survivedTracks.length; si++) {
+    var track = survivedTracks[si];
+    var rays = [];
+
+    for (var ki = 0; ki < keyFrameIndices.length; ki++) {
+      var kfi = keyFrameIndices[ki];
+      if (kfi >= track.positions.length) continue;
+
+      var pos = track.positions[kfi];
+      var u = pos.x / refImg.w;
+      var v = pos.y / refImg.h;
+
+      var ray = pixelToRay(u, v, fx, fy, cx, cy);
+      var Ri = keyRi[ki];
+      var faceRay = matVec3(Ri, ray);
+      var rl = vecLen(faceRay);
+      faceRay = vecScale(faceRay, 1/rl);
+
+      rays.push({
+        origin: matVec3(Ri, [0, 0, -camDist]),
+        dir: faceRay
+      });
+    }
+
+    if (rays.length < 2) continue;
+
+    var pt = triangulateMultiRay(rays);
+    if (pt) {
+      points3d.push({ x: pt[0], y: pt[1], z: pt[2], r: track.r, g: track.g, b: track.b });
+    }
+  }
+
+  lg('[OF-SfM] Triangulated: ' + points3d.length + ' points');
+
+  // ================================================================
+  // Phase 5: IPD 歸一化 + 離群點過濾
+  // ================================================================
+
+  // IPD 從 landmarks 三角測量
+  function triLm2(lmIdx) {
+    var raysLm = [];
+    for (var ki2 = 0; ki2 < keyFrameIndices.length; ki2++) {
+      var kfi2 = keyFrameIndices[ki2];
+      var lmK = frames[kfi2].landmarks;
+      var u2 = lmK[lmIdx].x, v2 = lmK[lmIdx].y;
+      var ray2 = pixelToRay(u2, v2, fx, fy, cx, cy);
+      var Ri2 = keyRi[ki2];
+      var fr2 = matVec3(Ri2, ray2); fr2 = vecScale(fr2, 1/vecLen(fr2));
+      raysLm.push({ origin: matVec3(Ri2, [0,0,-camDist]), dir: fr2 });
+    }
+    return triangulateMultiRay(raysLm);
+  }
+
+  var eyeL3 = triLm2(33), eyeR3 = triLm2(263);
+  var ipd3d = 1.0;
+  if (eyeL3 && eyeR3) ipd3d = vecLen(vecSub(eyeL3, eyeR3));
+
+  if (ipd3d > 0.001) {
+    var sc2 = 1.0 / ipd3d;
+    for (var pi2 = 0; pi2 < points3d.length; pi2++) {
+      points3d[pi2].x *= sc2; points3d[pi2].y *= sc2; points3d[pi2].z *= sc2;
+    }
+  }
+
+  // 離群點過濾
+  if (points3d.length > 50) {
+    var cx4=0,cy4=0,cz4=0;
+    for (var qi2=0;qi2<points3d.length;qi2++){cx4+=points3d[qi2].x;cy4+=points3d[qi2].y;cz4+=points3d[qi2].z;}
+    cx4/=points3d.length;cy4/=points3d.length;cz4/=points3d.length;
+    var ds=points3d.map(function(p){return Math.sqrt((p.x-cx4)*(p.x-cx4)+(p.y-cy4)*(p.y-cy4)+(p.z-cz4)*(p.z-cz4))});
+    ds.sort(function(a,b){return a-b});
+    var md=ds[Math.floor(ds.length*0.5)];
+    var maxD=md*3;
+    var before=points3d.length;
+    points3d=points3d.filter(function(p){
+      return Math.sqrt((p.x-cx4)*(p.x-cx4)+(p.y-cy4)*(p.y-cy4)+(p.z-cz4)*(p.z-cz4))<maxD;
+    });
+    lg('[OF-SfM] Outlier filter: '+before+' → '+points3d.length);
+  }
+
+  // ================================================================
+  // Phase 6: 視覺化 + 結果
+  // ================================================================
+  var result = {
+    points: points3d,
+    ipd3d: ipd3d,
+    stats: {
+      totalFrames: frames.length,
+      initialPoints: tracks.length,
+      survivedPoints: survivedTracks.length,
+      finalPoints: points3d.length,
+      keyFrames: keyFrameIndices.length,
+      yawRange: [frames[0].yaw, frames[frames.length-1].yaw]
+    }
+  };
+
+  // 渲染
+  pcModel = points3d.map(function(p){return{x:p.x,y:p.y,z:p.z,r:p.r,g:p.g,b:p.b,isDense:true}});
+  document.getElementById('pointcloud-box').style.display = 'block';
+  pcRedraw();
+
+  // 結果顯示
+  displayDense3DResult(result);
+
+  st('\u25C6 OF-SfM: ' + points3d.length + ' 3D points | ' + frames.length + ' frames | IPD=' + ipd3d.toFixed(4), 'ok');
+  enableButtons();
+}
+
+function displayDense3DResult(result) {
+  var el = document.getElementById('multi-result');
+  el.style.display = 'block';
+  var s = result.stats;
+
+  var html = '<div style="color:#f59e0b;font-weight:700;margin-bottom:8px;font-size:1.1em">'
+    + '\u25C6 Dense 3D — Optical Flow SfM</div>';
+
+  html += '<div style="font-size:.7em;color:#00e5ff;padding:6px;background:#0a0a1a;border-radius:4px;margin-bottom:8px">'
+    + 'Frames: ' + s.totalFrames
+    + ' | Initial pts: ' + s.initialPoints
+    + ' | Tracked: ' + s.survivedPoints
+    + ' (' + (s.survivedPoints/s.initialPoints*100).toFixed(1) + '% survived)'
+    + ' | Final 3D: ' + s.finalPoints
+    + ' | Key frames: ' + s.keyFrames
+    + '</div>';
+
+  html += '<div style="padding:10px;background:#0c0c14;border:2px solid #f59e0b;border-radius:8px">';
+  html += '<div style="color:#0f0;font-weight:700;font-size:1.1em">'
+    + result.points.length + ' 3D points (optical flow tracked)</div>';
+  html += '<div style="color:#888;font-size:.75em;margin-top:4px">'
+    + 'IPD_3D: ' + result.ipd3d.toFixed(6)
+    + ' | LK window: 15px | Grid: 4px'
+    + ' | Yaw: ' + s.yawRange[0].toFixed(3) + ' ~ ' + s.yawRange[1].toFixed(3)
+    + '</div>';
+  html += '</div>';
+
+  el.innerHTML = html;
+}
+
+// ============================================================
+// TRUE 3D TRIANGULATION SCAN (sparse landmarks)
+// ============================================================
+async function doTriangulate3D() {
+  if (!ready) return;
+
+  disableAllButtons();
+
+  var yawEl = document.getElementById('yaw-indicator');
+  yawEl.style.display = 'block';
+  var oldDots = yawEl.querySelectorAll('.yaw-dot');
+  for (var i = 0; i < oldDots.length; i++) oldDots[i].remove();
+
+  // ================================================================
+  // Phase 1: 高幀率擷取 — 每幀都跑 MediaPipe，全部保留
+  // ================================================================
+  var allFrames = [];
+  var rawZoneCounts = [0, 0, 0, 0, 0];
+  var SCAN_DURATION = 8000;
+  var TIMEOUT = 15000;
+  var startTime = Date.now();
+  var noFaceFrames = 0;
+
+  st('\u25B2 True 3D: Slowly turn RIGHT \u2192 CENTER \u2192 LEFT (capturing all frames)', 'ld');
+
+  while (Date.now() - startTime < TIMEOUT) {
+    var elapsed = Date.now() - startTime;
+
+    // 每幀都跑 MediaPipe detect — 不限間隔
+    var mp = fl.detect(vid);
+    if (!mp.faceLandmarks || !mp.faceLandmarks.length) {
+      noFaceFrames++;
+      await sleep(10);
+      continue;
+    }
+
+    var lm = mp.faceLandmarks[0];
+    var matrix = (mp.facialTransformationMatrixes && mp.facialTransformationMatrixes.length > 0)
+      ? mp.facialTransformationMatrixes[0] : null;
+
+    if (!matrix) { await sleep(10); continue; }
+
+    // Yaw 計算
+    var leX = (lm[33].x + lm[133].x) / 2;
+    var reX = (lm[263].x + lm[362].x) / 2;
+    var eyeMidX = (leX + reX) / 2;
+    var eyeSpan = Math.abs(reX - leX);
+    if (eyeSpan < 0.01) { await sleep(10); continue; }
+    var yaw = (lm[1].x - eyeMidX) / eyeSpan;
+
+    // EAR 檢查 — 過濾眨眼幀
+    var ear = computeEAR(lm);
+    if (ear < 0.15) { await sleep(10); continue; }
+
+    allFrames.push({ landmarks: lm, matrix: matrix, yaw: yaw });
+
+    var zone = getYawZone(yaw);
+    rawZoneCounts[zone]++;
+
+    updateYawUI(yaw, rawZoneCounts);
+    addYawDot(yaw, YAW_ZONES[zone].color);
+
+    var fps = (allFrames.length / (elapsed / 1000)).toFixed(1);
+    document.getElementById('yaw-title').textContent =
+      '\u25B2 ' + allFrames.length + ' frames (' + (elapsed/1000).toFixed(1) + 's, ' + fps + ' FPS)';
+
+    // 時間到 + 覆蓋足夠
+    var lT = rawZoneCounts[0] + rawZoneCounts[1];
+    var rT = rawZoneCounts[3] + rawZoneCounts[4];
+    if (elapsed >= 4000 && rawZoneCounts[2] >= 10 && lT >= 8 && rT >= 8 && elapsed >= SCAN_DURATION) break;
+
+    await sleep(5); // 極短等待，盡量高幀率
+  }
+
+  var totalFrames = allFrames.length;
+  var scanTime = ((Date.now() - startTime) / 1000).toFixed(1);
+  var fps2 = (totalFrames / parseFloat(scanTime)).toFixed(1);
+
+  lg('[Tri3D] Total: ' + totalFrames + ' frames in ' + scanTime + 's (' + fps2 + ' FPS)');
+  lg('[Tri3D] Zones: FL=' + rawZoneCounts[0] + ' L=' + rawZoneCounts[1]
+    + ' C=' + rawZoneCounts[2] + ' R=' + rawZoneCounts[3] + ' FR=' + rawZoneCounts[4]
+    + ' | No-face: ' + noFaceFrames);
+
+  if (totalFrames < 20) {
+    st('Not enough frames: ' + totalFrames + '. Need at least 20.', 'er');
+    enableButtons();
+    return;
+  }
+
+  // ================================================================
+  // Phase 2: 全量三角測量 — 468 landmarks × 全部幀
+  // ================================================================
+  st('\u25B2 Triangulating 468 landmarks × ' + totalFrames + ' frames...', 'ld');
+  await sleep(30);
+
+  var result = buildTrue3DModel(allFrames);
+
+  if (!result) {
+    st('Triangulation failed — check log for details', 'er');
+    enableButtons();
+    return;
+  }
+
+  // ================================================================
+  // Phase 3: 取第一幀的 RGB 顏色映射到 3D 點
+  // ================================================================
+  var firstFrame = allFrames[0];
+  var rgbCanvas = makeCanvas(vid.videoWidth, vid.videoHeight);
+  // 注意：此時 video 已經過了掃描時間，但我們可以用 landmarks 位置來取色
+  // 更好的方法：在掃描時存一幀 RGB
+  // 先用 landmarks 2D 位置對應色彩（從當前 video）
+  var rgbCtx = rgbCanvas.getContext('2d');
+  rgbCtx.drawImage(vid, 0, 0);
+  var rgbImgData = rgbCtx.getImageData(0, 0, vid.videoWidth, vid.videoHeight);
+  var rgbPx = rgbImgData.data;
+  var vw = vid.videoWidth, vh = vid.videoHeight;
+
+  // 為每個 3D 點上色（用第一幀的 landmark 2D 位置取色）
+  var coloredModel = [];
+  for (var ci = 0; ci < result.model.length; ci++) {
+    var lmPt = firstFrame.landmarks[ci];
+    var px = Math.round(lmPt.x * vw);
+    var py = Math.round(lmPt.y * vh);
+    px = Math.max(0, Math.min(vw - 1, px));
+    py = Math.max(0, Math.min(vh - 1, py));
+    var pIdx = (py * vw + px) * 4;
+
+    coloredModel.push({
+      x: result.model[ci].x,
+      y: result.model[ci].y,
+      z: result.model[ci].z,
+      r: rgbPx[pIdx], g: rgbPx[pIdx + 1], b: rgbPx[pIdx + 2],
+      isDense: true
+    });
+  }
+
+  // ================================================================
+  // Phase 4: 視覺化
+  // ================================================================
+  render3DFaceViews(result.model);
+
+  // 互動點雲用 RGB 顏色
+  pcModel = coloredModel;
+  document.getElementById('pointcloud-box').style.display = 'block';
+  pcRedraw();
+
+  displayTriangulationResult(result, totalFrames, null);
+
+  st('\u25B2 True 3D: ' + totalFrames + ' frames × 468 landmarks | IPD=' + result.ipd3d.toFixed(4)
+    + ' | Nose=' + result.depthRatios.D01_nose_protrusion.toFixed(3), 'ok');
+
+  enableButtons();
+}
+
+function displayTriangulationResult(result, totalRaw, selection) {
+  var el = document.getElementById('multi-result');
+  el.style.display = 'block';
+
+  var s = result.stats;
+  var dr = result.depthRatios;
+
+  var html = '<div style="color:#e11d48;font-weight:700;margin-bottom:8px;font-size:1.1em">'
+    + '\u25B2 True 3D Triangulation Result</div>';
+
+  // 擷取統計
+  html += '<div style="font-size:.7em;color:#00e5ff;padding:6px;background:#0a0a1a;border-radius:4px;margin-bottom:8px">'
+    + 'Total: ' + totalRaw + ' frames | Used for triangulation: ' + s.framesUsed
+    + ' | Yaw: ' + s.yawRange[0].toFixed(3) + ' ~ ' + s.yawRange[1].toFixed(3)
+    + ' | Good: ' + s.goodLandmarks + '/468'
+    + ' | Err: ' + s.avgError.toFixed(6) + '</div>';
+
+  // 3D 驗證指標
+  html += '<div style="padding:10px;background:#0c0c14;border:2px solid #e11d48;border-radius:8px;margin-bottom:8px">';
+  html += '<div style="color:#e11d48;font-weight:700;margin-bottom:6px">3D Depth Verification</div>';
+
+  var noseOk = Math.abs(s.noseTipZ) > 0.01;
+  var depthSpread = Math.abs(s.noseTipZ - (s.earLZ + s.earRZ)/2);
+  html += '<div style="font-size:.75em;margin-bottom:4px">'
+    + 'Nose tip Z: <span style="color:' + (noseOk ? '#0f0' : '#f44') + ';font-weight:700">'
+    + s.noseTipZ.toFixed(4) + '</span>'
+    + ' | Ear L Z: ' + s.earLZ.toFixed(4)
+    + ' | Ear R Z: ' + s.earRZ.toFixed(4)
+    + ' | Depth spread: <span style="color:#ffc107;font-weight:700">' + depthSpread.toFixed(4) + '</span>'
+    + '</div>';
+
+  html += '<div style="font-size:.7em;color:' + (noseOk ? '#0f0' : '#f44') + '">'
+    + (noseOk ? '\u2705 Nose protrudes from face plane — 3D is working!' : '\u274c No depth detected — 3D may have failed')
+    + '</div>';
+  html += '</div>';
+
+  // 深度比率表
+  html += '<div style="padding:10px;background:#0c0c14;border:1px solid #333;border-radius:8px;margin-bottom:8px">';
+  html += '<div style="color:#ffc107;font-weight:700;margin-bottom:6px">Depth Ratios (IPD = 1.0)</div>';
+  html += '<table style="width:100%;font-size:.7em;border-collapse:collapse">';
+  html += '<tr style="color:#00e5ff;border-bottom:2px solid #333"><th>ID</th><th>Name</th><th>Value</th></tr>';
+
+  var ratioEntries = [
+    ['D01', 'Nose protrusion (tip vs eye plane)', dr.D01_nose_protrusion],
+    ['D02', 'Nasion depth (bridge vs eye plane)', dr.D02_nasion_depth],
+    ['D03', 'Orbital depth (brow vs eye)', dr.D03_orbital_depth],
+    ['D04', 'Cheekbone (vs eye plane)', dr.D04_cheekbone],
+    ['D05', 'Forehead curve (center vs sides)', dr.D05_forehead_curve],
+    ['D06', 'Chin protrusion (vs eye plane)', dr.D06_chin_protrusion],
+    ['D07', 'Nose length 3D (nasion→tip)', dr.D07_nose_length_3d],
+    ['D08', 'Orbital-nasion 3D', dr.D08_orbital_nasion_3d],
+    ['D09', 'Face side depth (cheek→ear)', dr.D09_face_side_depth],
+    ['D10', 'Alar width 3D', dr.D10_alar_width_3d],
+    ['D11', 'Face depth (nose→ear)', dr.D11_face_depth],
+    ['D12', 'Bizygomatic 3D (cheek↔cheek)', dr.D12_bizygomatic_3d],
+  ];
+
+  for (var ri = 0; ri < ratioEntries.length; ri++) {
+    var re = ratioEntries[ri];
+    var val = re[2];
+    var color = val > 0.01 ? '#0f0' : '#f44';
+    html += '<tr style="border-bottom:1px solid #1a1a2a">'
+      + '<td style="color:#e11d48;font-weight:700">' + re[0] + '</td>'
+      + '<td style="color:#888">' + re[1] + '</td>'
+      + '<td style="color:' + color + ';font-weight:700">' + val.toFixed(4) + '</td>'
+      + '</tr>';
+  }
+  html += '</table>';
+  html += '</div>';
+
+  // 與 2D 比率對比（如果有的話）
+  html += '<div style="font-size:.65em;color:#555;margin-top:6px">'
+    + 'IPD_3D (raw): ' + result.ipd3d.toFixed(6)
+    + ' | All depth values normalized by IPD (IPD = 1.0)'
+    + '</div>';
+
+  el.innerHTML = html;
 }
 
 // ============================================================
@@ -1536,6 +3070,8 @@ function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms) }) }
 
 function enableButtons() {
   document.getElementById('b-3d-scan').disabled = false;
+  document.getElementById('b-3d-tri').disabled = false;
+  document.getElementById('b-dense3d').disabled = false;
   document.getElementById('b-3d-multi').disabled = false;
   document.getElementById('b-login').disabled = false;
   document.getElementById('b-clear').disabled = false;
@@ -1543,6 +3079,8 @@ function enableButtons() {
 
 function disableAllButtons() {
   document.getElementById('b-3d-scan').disabled = true;
+  document.getElementById('b-3d-tri').disabled = true;
+  document.getElementById('b-dense3d').disabled = true;
   document.getElementById('b-3d-multi').disabled = true;
   document.getElementById('b-login').disabled = true;
   document.getElementById('b-clear').disabled = true;
