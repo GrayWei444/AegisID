@@ -1,14 +1,13 @@
 /**
- * Face Recognition Hook
+ * Face Recognition Hook — 骨骼比率系統 (structuralId)
  *
  * 管理相機串流、臉部偵測迴圈、活體狀態機
  *
  * 兩種模式：
- * - register: 主動活體偵測（眨眼+轉頭），收集 landmark embedding + anti-spoof
- * - verify: 被動活體偵測（自然眨眼+微動），收集 landmark embedding
+ * - register: 主動活體偵測（眨眼+轉頭），收集 CapturedFrame[] → computeStructuralId()
+ * - verify: 被動活體偵測（自然眨眼+微動），收集正面 frames → matchLoginBins()
  *
- * 注意：MobileFaceNet CNN embedding 已移除，臉部辨識改用骨骼比率系統（structuralId.ts）。
- * 此 hook 使用 landmark embedding 作為 fallback，anti-spoof 仍使用 MiniFASNet。
+ * Anti-spoof 仍使用 MiniFASNet CNN。
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -23,10 +22,10 @@ import {
   PassiveLivenessDetector,
 } from './liveness';
 import {
-  cosineSimilarity,
-  computeStableEmbedding,
-  computeEmbeddingConsistency,
-} from './embedding';
+  computeStructuralId,
+  matchLoginBins,
+} from './structuralId';
+import type { CapturedFrame, Landmark3D } from './structuralId';
 import {
   initCnnModels,
   isCnnReady,
@@ -35,34 +34,56 @@ import {
   resetBboxSmoothing,
 } from './cnnInference';
 import {
-  saveFaceEmbedding,
-  getFaceEmbedding,
+  saveBoneRatioData,
+  getBoneRatioData,
 } from './storage';
 import type {
   FaceDetectionStatus,
-  FaceEmbedding,
+  FaceDetectionResult,
   FaceLandmark,
   LivenessChallenge,
   LivenessResult,
   AntiSpoofResult,
   SpoofDetectionResult,
+  BoneRatioPlainData,
 } from './types';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/** 預設比對閾值 */
-const DEFAULT_MATCH_THRESHOLD = 0.6;
+/** 登入比對閾值 (骨骼比率 matchRate) */
+const LOGIN_MATCH_THRESHOLD = 0.80;
 
-/** 預設自動登入閾值 */
-const DEFAULT_AUTO_LOGIN_THRESHOLD = 0.75;
-
-/** Landmark fallback 時的擷取幀數 */
-const CAPTURE_FRAMES = 5;
+/** 最少擷取幀數（verify 模式） */
+const MIN_VERIFY_FRAMES = 5;
 
 /** 偵測迴圈間隔 (ms) */
 const DETECTION_INTERVAL = 100;
+
+/** 註冊模式：同 zone 最小擷取間隔 (ms)，避免同角度過多重複幀 */
+const REGISTER_CAPTURE_INTERVAL = 120;
+
+/**
+ * Yaw zone 定義（與測試工具一致）
+ * 確保左/中/右角度均勻分佈
+ */
+const YAW_ZONES = [
+  { min: 0.20, max: 0.50, target: 4 },   // far-left
+  { min: 0.08, max: 0.20, target: 4 },   // left
+  { min: -0.08, max: 0.08, target: 6 },  // center
+  { min: -0.20, max: -0.08, target: 4 }, // right
+  { min: -0.50, max: -0.20, target: 4 }, // far-right
+] as const;
+
+function getYawZone(yaw: number): number {
+  for (let i = 0; i < YAW_ZONES.length; i++) {
+    if (yaw >= YAW_ZONES[i].min && yaw < YAW_ZONES[i].max) return i;
+  }
+  if (yaw >= 0.50) return 0;
+  if (yaw < -0.50) return 4;
+  return 2;
+}
 
 /** CNN 推論間隔 (ms) — 每 500ms 跑一次 CNN */
 const CNN_INTERVAL = 500;
@@ -77,9 +98,9 @@ const DIAGNOSTIC_LOG_INTERVAL = 3000;
 export interface UseFaceRecognitionOptions {
   /** 註冊 or 驗證 */
   mode: 'register' | 'verify';
-  /** 比對閾值（verify 模式），default 0.6 */
+  /** 比對閾值（verify 模式），default 0.80 */
   matchThreshold?: number;
-  /** 自動登入閾值（verify 模式），default 0.75 */
+  /** 自動登入閾值（verify 模式），default 0.85 */
   autoLoginThreshold?: number;
 }
 
@@ -98,7 +119,7 @@ interface UseFaceRecognitionReturn {
   challengeProgress: { current: number; total: number };
   /** 活體偵測結果 */
   livenessResult: LivenessResult | null;
-  /** cosine similarity（verify 模式） */
+  /** 骨骼比率 matchRate（verify 模式） */
   similarity: number | null;
   /** 是否已驗證通過 */
   isVerified: boolean;
@@ -126,8 +147,8 @@ interface UseFaceRecognitionReturn {
 
 export function useFaceRecognition({
   mode,
-  matchThreshold = DEFAULT_MATCH_THRESHOLD,
-  autoLoginThreshold = DEFAULT_AUTO_LOGIN_THRESHOLD,
+  matchThreshold = LOGIN_MATCH_THRESHOLD,
+  autoLoginThreshold = 0.85,
 }: UseFaceRecognitionOptions): UseFaceRecognitionReturn {
   const [status, setStatus] = useState<FaceDetectionStatus>('idle');
   const [currentChallenge, setCurrentChallenge] = useState<LivenessChallenge | null>(null);
@@ -149,18 +170,24 @@ export function useFaceRecognition({
   const animFrameRef = useRef<number>(0);
   const activeDetectorRef = useRef<ActiveLivenessDetector | null>(null);
   const passiveDetectorRef = useRef<PassiveLivenessDetector | null>(null);
-  const capturedFramesRef = useRef<FaceLandmark[][]>([]);
-  const capturedEmbeddingRef = useRef<FaceEmbedding | null>(null);
   const isRunningRef = useRef(false);
   const lastTimestampRef = useRef(0);
   const statusRef = useRef<FaceDetectionStatus>('idle');
 
+  // 骨骼比率系統：收集 CapturedFrame[]
+  const capturedFramesRef = useRef<CapturedFrame[]>([]);
+  // 註冊完成後暫存的骨骼比率結果
+  const boneRatioResultRef = useRef<BoneRatioPlainData | null>(null);
+  // Yaw zone 計數（註冊模式，確保左/中/右均勻分佈）
+  const zoneCountsRef = useRef<number[]>([0, 0, 0, 0, 0]);
+  const lastCaptureMsRef = useRef(0);
+
   // Anti-spoof 相關 refs
   const lastCnnTimestampRef = useRef(0);
   const spoofVotesRef = useRef<SpoofDetectionResult[]>([]);
-  const cnnRunningRef = useRef(false); // 防止同時跑兩次推論
+  const cnnRunningRef = useRef(false);
 
-  // Verify mode: 被動活體已通過但 CNN 尚未就緒，持續等待
+  // Verify mode: 被動活體已通過但尚未完成
   const livenessPassedRef = useRef(false);
 
   // Diagnostic counters
@@ -183,7 +210,7 @@ export function useFaceRecognition({
       // 先啟動相機 + MediaPipe（必須），CNN 在背景載入（不阻塞相機啟動）
       const [cameraResult, mediapipeResult] = await Promise.allSettled([
         navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         }),
         initFaceLandmarker(),
       ]);
@@ -280,16 +307,16 @@ export function useFaceRecognition({
       }
       lastTimestampRef.current = now;
 
-      // 偵測人臉
-      const landmarks = detectFace(video, now);
+      // 偵測人臉（返回 landmarks + matrix + yaw）
+      const detection = detectFace(video, now);
 
       // Diagnostic logging every 3 seconds
       if (now - lastDiagnosticLogRef.current >= DIAGNOSTIC_LOG_INTERVAL) {
         lastDiagnosticLogRef.current = now;
-        console.error(`[FaceRec] Detection: noFace=${noFaceCountRef.current}, face=${faceDetectedCountRef.current}, antiSpoof=${isCnnReady()}`);
+        console.error(`[FaceRec] Detection: noFace=${noFaceCountRef.current}, face=${faceDetectedCountRef.current}, frames=${capturedFramesRef.current.length}, antiSpoof=${isCnnReady()}`);
       }
 
-      if (!landmarks) {
+      if (!detection) {
         noFaceCountRef.current++;
         if (statusRef.current !== 'ready' && statusRef.current !== 'loading') {
           setStatusAndRef('ready');
@@ -304,15 +331,15 @@ export function useFaceRecognition({
       // Log first face detection
       if (!firstFaceLoggedRef.current) {
         firstFaceLoggedRef.current = true;
-        devLog(`[FaceRec] First face detected (mode=${mode})`);
+        devLog(`[FaceRec] First face detected (mode=${mode}, hasMatrix=${!!detection.matrix})`);
       }
 
-      const geometry = extractFaceGeometry(landmarks);
+      const geometry = extractFaceGeometry(detection.landmarks);
 
       if (mode === 'register') {
-        handleRegisterFrame(video, landmarks, geometry, now);
+        handleRegisterFrame(video, detection, geometry, now);
       } else {
-        handleVerifyFrame(video, landmarks, geometry, now);
+        handleVerifyFrame(video, detection, geometry, now);
       }
 
       animFrameRef.current = requestAnimationFrame(loop);
@@ -322,21 +349,17 @@ export function useFaceRecognition({
   }, [mode, setStatusAndRef]);
 
   // =========================================================================
-  // CNN Capture (Phase 26b) — 邊挑戰邊擷取
+  // Anti-Spoof Capture
   // =========================================================================
 
   /**
    * 每 500ms 執行一次防偽推論
    * 在挑戰期間持續執行，收集防偽投票結果
-   *
-   * 注意：MobileFaceNet CNN embedding 已移除，臉部辨識改用骨骼比率系統。
-   * 此函式現在只負責 anti-spoof 偵測。
    */
   const maybeSpoofCapture = useCallback(async (
     video: HTMLVideoElement,
     geometry: ReturnType<typeof extractFaceGeometry>,
     now: number,
-    _detector: ActiveLivenessDetector | null
   ): Promise<void> => {
     // Anti-spoof 未就緒 or 還在跑上一次 → 跳過
     if (!isCnnReady() || cnnRunningRef.current) return;
@@ -366,9 +389,7 @@ export function useFaceRecognition({
   /**
    * 從累積的防偽投票計算 AntiSpoofResult
    */
-  const computeAntiSpoofResult = useCallback((
-    detector: ActiveLivenessDetector | null
-  ): AntiSpoofResult => {
+  const computeAntiSpoofResult = useCallback((): AntiSpoofResult => {
     const votes = spoofVotesRef.current;
     const realCount = votes.filter(v => v.isReal).length;
     const spoofCount = votes.length - realCount;
@@ -376,37 +397,22 @@ export function useFaceRecognition({
       ? votes.reduce((s, v) => s + v.confidence, 0) / votes.length
       : 0;
 
-    // Embedding 一致性分析
-    const snapshots = detector?.getSnapshots() ?? [];
-    const embeddingConsistency = computeEmbeddingConsistency(snapshots);
-
-    // 綜合防偽分數
-    const cnnWeight = 0.7;
-    const consistencyWeight = 0.3;
-    const consistencyScore = Math.min(
-      embeddingConsistency.blinkDelta * 10 +
-      embeddingConsistency.turnEyeRatio * 5 +
-      embeddingConsistency.overallVariance * 10,
-      1
-    );
-    const score = avgConfidence * cnnWeight + consistencyScore * consistencyWeight;
-
     return {
       cnnScore: avgConfidence,
       cnnVotes: { real: realCount, spoof: spoofCount },
-      embeddingConsistency,
-      score,
-      isSuspicious: score < 0.4 || (votes.length >= 3 && spoofCount > realCount),
+      embeddingConsistency: { blinkDelta: 0, turnEyeRatio: 0, overallVariance: 0 },
+      score: avgConfidence,
+      isSuspicious: avgConfidence < 0.4 || (votes.length >= 3 && spoofCount > realCount),
     };
   }, []);
 
   // =========================================================================
-  // Register Mode: Active Liveness + 邊挑戰邊擷取
+  // Register Mode: Active Liveness + 收集 CapturedFrame[]
   // =========================================================================
 
   const handleRegisterFrame = useCallback((
     video: HTMLVideoElement,
-    landmarks: FaceLandmark[],
+    detection: FaceDetectionResult,
     geometry: ReturnType<typeof extractFaceGeometry>,
     now: number
   ) => {
@@ -414,32 +420,65 @@ export function useFaceRecognition({
     if (!detector) return;
 
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
-    maybeSpoofCapture(video, geometry, now, detector);
-
-    // 收集 landmark frames 用於 embedding
-    capturedFramesRef.current.push(landmarks);
+    maybeSpoofCapture(video, geometry, now);
 
     const challenge = detector.getCurrentChallenge();
 
+    // 只在轉頭掃描階段收集 3D 幀（眨眼不收集，挑戰完成後也不再收集）
+    if (challenge === 'turn_head' || challenge === 'turn_right' || challenge === 'turn_left') {
+      const yaw = detection.yaw ?? 0;
+      const zone = getYawZone(yaw);
+      const zoneCount = zoneCountsRef.current[zone];
+      const zoneTarget = YAW_ZONES[zone].target;
+
+      if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+        const frame: CapturedFrame = {
+          landmarks: detection.landmarks as unknown as Landmark3D[],
+          matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+          yaw,
+        };
+        capturedFramesRef.current.push(frame);
+        zoneCountsRef.current[zone]++;
+        lastCaptureMsRef.current = now;
+      }
+    }
+
     if (!challenge) {
-      // 所有挑戰完成 — 計算最終 landmark embedding
+      // 所有挑戰完成 — 計算骨骼比率 structural ID
       if (statusRef.current !== 'capturing') {
         setStatusAndRef('capturing');
       }
 
       if (capturedFramesRef.current.length > 0) {
-        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
-        const antiSpoof = computeAntiSpoofResult(detector);
-        const result = { ...detector.getResult(), antiSpoof };
-        setLivenessResult(result);
-        setAntiSpoofResult(antiSpoof);
-        isRunningRef.current = false;
-        devLog('[FaceRec] Register challenges complete, frames:', capturedFramesRef.current.length);
-        devLog('[FaceRec] Anti-spoof result computed, score:', antiSpoof.score.toFixed(3));
+        // 非同步計算 structural ID（SHA-256 需要 await）
+        computeStructuralId(capturedFramesRef.current)
+          .then((result) => {
+            boneRatioResultRef.current = {
+              frontalBins: Object.fromEntries(result.frontalBins),
+              hash: result.hashes.hashCombined,
+            };
+
+            const antiSpoof = computeAntiSpoofResult();
+            const livenessRes = { ...detector.getResult(), antiSpoof };
+            setLivenessResult(livenessRes);
+            setAntiSpoofResult(antiSpoof);
+            isRunningRef.current = false;
+
+            devLog('[FaceRec] Register complete — 2D:', result.hashes.hash2D.slice(0, 12) + '... 3D:', result.hashes.hash3D.slice(0, 12) + '...');
+            devLog('[FaceRec] Stable: 2D=' + result.stableCount2D + ' 3D=' + result.stableCount3D);
+            devLog('[FaceRec] Frontal bins:', result.frontalBins.size);
+            devLog('[FaceRec] Frames collected:', capturedFramesRef.current.length);
+          })
+          .catch((err) => {
+            devWarn('[FaceRec] computeStructuralId failed:', err);
+            setStatusAndRef('failed');
+            setLivenessResult(detector.getResult());
+            isRunningRef.current = false;
+          });
         return;
       }
 
-      devWarn('[FaceRec] No landmark frames captured');
+      devWarn('[FaceRec] No frames captured');
       setStatusAndRef('failed');
       setLivenessResult(detector.getResult());
       isRunningRef.current = false;
@@ -467,12 +506,12 @@ export function useFaceRecognition({
   }, [maybeSpoofCapture, computeAntiSpoofResult, setStatusAndRef]);
 
   // =========================================================================
-  // Verify Mode: Passive Liveness + 邊偵測邊擷取
+  // Verify Mode: Passive Liveness + 收集正面 frames
   // =========================================================================
 
   const handleVerifyFrame = useCallback((
     video: HTMLVideoElement,
-    landmarks: FaceLandmark[],
+    detection: FaceDetectionResult,
     geometry: ReturnType<typeof extractFaceGeometry>,
     now: number
   ) => {
@@ -482,10 +521,15 @@ export function useFaceRecognition({
     setStatusAndRef('face_detected');
 
     // 邊偵測邊擷取防偽推論
-    maybeSpoofCapture(video, geometry, now, null);
+    maybeSpoofCapture(video, geometry, now);
 
-    // 收集 landmark frames 用於 embedding
-    capturedFramesRef.current.push(landmarks);
+    // 收集正面 frames（verify 只需要正面 landmarks）
+    const frame: CapturedFrame = {
+      landmarks: detection.landmarks as unknown as Landmark3D[],
+      matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+      yaw: detection.yaw,
+    };
+    capturedFramesRef.current.push(frame);
 
     // 檢查被動活體是否已通過
     const passed = livenessPassedRef.current || detector.processFrame(geometry);
@@ -493,12 +537,9 @@ export function useFaceRecognition({
     if (passed) {
       livenessPassedRef.current = true;
 
-      // 使用 landmark embedding
-      if (capturedFramesRef.current.length >= CAPTURE_FRAMES) {
-        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
-
+      if (capturedFramesRef.current.length >= MIN_VERIFY_FRAMES) {
         // Compute and set anti-spoof result
-        const antiSpoof = computeAntiSpoofResult(null);
+        const antiSpoof = computeAntiSpoofResult();
         setAntiSpoofResult(antiSpoof);
 
         setLivenessResult(detector.getResult());
@@ -508,39 +549,36 @@ export function useFaceRecognition({
       }
 
       // 繼續收集 frames
-      devLog('[FaceRec] Liveness passed, collecting more frames...', capturedFramesRef.current.length, '/', CAPTURE_FRAMES);
+      devLog('[FaceRec] Liveness passed, collecting more frames...', capturedFramesRef.current.length, '/', MIN_VERIFY_FRAMES);
       return;
     }
 
     // 檢查超時（被動活體未通過 + 超時）
     if (detector.isTimedOut()) {
-      if (capturedFramesRef.current.length > 0) {
-        capturedEmbeddingRef.current = computeStableEmbedding(capturedFramesRef.current);
-      }
       setLivenessResult(detector.getResult());
       devLog('[FaceRec] Passive liveness timeout — using', capturedFramesRef.current.length, 'frames');
     }
   }, [maybeSpoofCapture, computeAntiSpoofResult, setStatusAndRef]);
 
   // =========================================================================
-  // Save / Verify Embedding
+  // Save / Verify — 骨骼比率系統
   // =========================================================================
 
   const registerFace = useCallback(async (encryptionKey: CryptoKey): Promise<boolean> => {
-    const embedding = capturedEmbeddingRef.current;
-    if (!embedding) {
-      devWarn('[FaceRec] No embedding captured');
+    const boneData = boneRatioResultRef.current;
+    if (!boneData) {
+      devWarn('[FaceRec] No bone ratio data captured');
       return false;
     }
 
     try {
-      await saveFaceEmbedding(embedding, encryptionKey);
+      await saveBoneRatioData(boneData, encryptionKey);
       setStatusAndRef('verified');
       setIsVerified(true);
-      devLog('[FaceRec] Face registered successfully, dim:', embedding.length);
+      devLog('[FaceRec] Face registered (bone ratio), hash:', boneData.hash.slice(0, 16) + '...', 'bins:', Object.keys(boneData.frontalBins).length);
       return true;
     } catch (err) {
-      devWarn('[FaceRec] Failed to save face embedding:', err);
+      devWarn('[FaceRec] Failed to save bone ratio data:', err);
       setStatusAndRef('failed');
       return false;
     }
@@ -549,41 +587,43 @@ export function useFaceRecognition({
   const verifyFace = useCallback(async (encryptionKey: CryptoKey): Promise<VerifyFaceResult> => {
     const failResult: VerifyFaceResult = { matched: false, similarity: 0, autoLoginReady: false };
 
-    const capturedEmb = capturedEmbeddingRef.current;
-    if (!capturedEmb) {
-      devWarn('[FaceRec] No embedding captured for verification');
+    const frames = capturedFramesRef.current;
+    if (frames.length < 2) {
+      devWarn('[FaceRec] Not enough frames for verification:', frames.length);
       return failResult;
     }
 
     try {
-      const storedEmb = await getFaceEmbedding(encryptionKey);
-      if (!storedEmb) {
-        devWarn('[FaceRec] No stored embedding found');
+      const storedData = await getBoneRatioData(encryptionKey);
+      if (!storedData) {
+        devWarn('[FaceRec] No stored bone ratio data found');
         setStatusAndRef('failed');
         return failResult;
       }
 
-      // 維度不同 = 不同來源（CNN vs landmark），無法比對
-      if (capturedEmb.length !== storedEmb.length) {
-        devWarn('[FaceRec] Embedding dimension mismatch:', capturedEmb.length, 'vs', storedEmb.length);
-        setStatusAndRef('failed');
-        return failResult;
-      }
+      // 從 CapturedFrame[] 提取 landmarks 陣列
+      const loginLandmarks = frames.map(f => f.landmarks);
 
-      const sim = cosineSimilarity(capturedEmb, storedEmb);
-      setSimilarity(sim);
+      // 用 matchLoginBins 比對
+      const storedBins = new Map(Object.entries(storedData.frontalBins).map(
+        ([k, v]) => [k, v as number]
+      ));
+      const matchResult = matchLoginBins(loginLandmarks, storedBins);
 
-      const isMatch = sim >= matchThreshold;
-      const autoLoginReady = sim >= autoLoginThreshold;
+      const matchRate = matchResult.matchRate;
+      setSimilarity(matchRate);
+
+      const isMatch = matchResult.passed;
+      const autoLoginReady = matchRate >= autoLoginThreshold;
       setStatusAndRef(isMatch ? 'verified' : 'failed');
       setIsVerified(isMatch);
 
       // Compute and set anti-spoof result for verify mode
-      const antiSpoof = computeAntiSpoofResult(null);
+      const antiSpoof = computeAntiSpoofResult();
       setAntiSpoofResult(antiSpoof);
 
-      devLog(`[FaceRec] Verification: similarity=${sim.toFixed(3)}, match=${isMatch}, autoLoginReady=${autoLoginReady}, dim=${capturedEmb.length}, antiSpoof=${antiSpoof.score.toFixed(3)}`);
-      return { matched: isMatch, similarity: sim, autoLoginReady };
+      devLog(`[FaceRec] Verification (bone ratio): matchRate=${matchRate.toFixed(3)} (${matchResult.matchCount}/${matchResult.totalCompared}), pass=${isMatch}, autoLogin=${autoLoginReady}, antiSpoof=${antiSpoof.score.toFixed(3)}`);
+      return { matched: isMatch, similarity: matchRate, autoLoginReady };
     } catch (err) {
       devWarn('[FaceRec] Verification failed:', err);
       setStatusAndRef('failed');
@@ -605,7 +645,7 @@ export function useFaceRecognition({
     setIsVerified(false);
     setAntiSpoofResult(null);
     capturedFramesRef.current = [];
-    capturedEmbeddingRef.current = null;
+    boneRatioResultRef.current = null;
     activeDetectorRef.current = null;
     passiveDetectorRef.current = null;
     // Reset anti-spoof state

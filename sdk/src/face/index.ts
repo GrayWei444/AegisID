@@ -4,9 +4,6 @@
  * - 骨骼比率臉部辨識（structuralId.ts）— 主要路線
  * - Anti-spoof 防偽（MiniFASNetV2SE）
  * - MediaPipe FaceLandmarker（468 landmarks）
- * - Landmark-based embedding（降級 fallback）
- *
- * MobileFaceNet CNN embedding 已移除，臉部辨識改用骨骼比率系統。
  */
 
 // Types
@@ -15,11 +12,14 @@ export type {
   FaceLandmark,
   FaceGeometry,
   FaceDetectionStatus,
+  FaceDetectionResult,
   FaceVerifyResult,
   LivenessResult,
   LivenessChallenge,
   LivenessChallengeStatus,
   StoredFaceEmbedding,
+  StoredBoneRatioData,
+  BoneRatioPlainData,
   BoundingBox,
   AntiSpoofResult,
   EmbeddingConsistency,
@@ -42,7 +42,38 @@ export {
 // Liveness Detection
 export { ActiveLivenessDetector, PassiveLivenessDetector } from './liveness';
 
-// Embedding (landmark-based)
+// Structural Face ID v17 (骨骼比率 + 真 3D)
+export {
+  computeStructuralId,
+  matchLoginBins,
+  buildTrue3DModel,
+  buildTrue3DModel as build3DModel,
+  compute3DFeatures,
+  computeBoneRatios,
+  computeMedianBins,
+  selectStrictFrontalFrames,
+  computePHash4x4,
+  computeAccountKey,
+  DEFAULT_BIN_WIDTH,
+  LOGIN_MATCH_THRESHOLD,
+  STABLE_RATIO_WHITELIST,
+  STABLE_3D_FEATURES,
+} from './structuralId';
+
+export type {
+  CapturedFrame,
+  Landmark3D,
+  TransformMatrixData,
+  FaceStructureIdResult,
+  IdentityHashes,
+  LoginMatchResult,
+  BoneRatioResult,
+  BoneRatioCategory,
+  GrayImage,
+  PHash,
+} from './structuralId';
+
+// Embedding (landmark-based, legacy — kept for backward compat)
 export {
   extractFaceEmbedding,
   cosineSimilarity,
@@ -79,4 +110,6 @@ export {
   clearFaceData,
   getStoredFaceEmbeddingRaw,
   restoreFaceEmbedding,
+  saveBoneRatioData,
+  getBoneRatioData,
 } from './storage';
