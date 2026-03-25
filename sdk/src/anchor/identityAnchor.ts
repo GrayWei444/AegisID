@@ -32,6 +32,8 @@ export function setAnchorApiUrl(url: string): void {
 export interface IdentityBlob {
   publicKey: string;
   displayName: string;
+  /** Phase 31.3: 加密的 privateKey (Base64)，用於跨裝置恢復 */
+  privateKey?: string;
 }
 
 export interface RegisterResult {
@@ -70,6 +72,8 @@ export async function registerIdentityAnchor(params: {
   pin: string;
   publicKey: string;
   displayName: string;
+  /** Phase 31.3: privateKey (Base64) — 存入 encrypted_blob 供跨裝置恢復 */
+  privateKey?: string;
 }): Promise<RegisterResult> {
   try {
     // 1. Compute account_key = SHA-256(face_hash + PIN)
@@ -79,6 +83,7 @@ export async function registerIdentityAnchor(params: {
     const blob: IdentityBlob = {
       publicKey: params.publicKey,
       displayName: params.displayName,
+      privateKey: params.privateKey,
     };
     const plaintext = new TextEncoder().encode(JSON.stringify(blob));
     const { encrypted, salt, iv } = await encryptWithPin(plaintext, params.pin);
