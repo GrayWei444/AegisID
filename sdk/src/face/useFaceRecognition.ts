@@ -61,16 +61,19 @@ const MIN_VERIFY_FRAMES = 5;
 /** 偵測迴圈間隔 (ms) */
 const DETECTION_INTERVAL = 100;
 
+/** 註冊模式：同 zone 最小擷取間隔 (ms)，避免同角度過多重複幀 */
+const REGISTER_CAPTURE_INTERVAL = 120;
+
 /**
- * v17 Yaw zone 定義 — 5 區各有最低幀數要求
- * 高幀率擷取（不限間隔），每幀都存
+ * Yaw zone 定義（與測試工具一致）
+ * 確保左/中/右角度均勻分佈
  */
 const YAW_ZONES = [
-  { min: 0.20, max: 0.50, target: 8 },   // far-left
-  { min: 0.08, max: 0.20, target: 8 },   // left
-  { min: -0.08, max: 0.08, target: 15 }, // center
-  { min: -0.20, max: -0.08, target: 8 }, // right
-  { min: -0.50, max: -0.20, target: 8 }, // far-right
+  { min: 0.20, max: 0.50, target: 4 },   // far-left
+  { min: 0.08, max: 0.20, target: 4 },   // left
+  { min: -0.08, max: 0.08, target: 6 },  // center
+  { min: -0.20, max: -0.08, target: 4 }, // right
+  { min: -0.50, max: -0.20, target: 4 }, // far-right
 ] as const;
 
 function getYawZone(yaw: number): number {
@@ -99,11 +102,6 @@ export interface UseFaceRecognitionOptions {
   matchThreshold?: number;
   /** 自動登入閾值（verify 模式），default 0.85 */
   autoLoginThreshold?: number;
-  /**
-   * 影片測試模式：提供 mp4 URL 時，用影片檔代替攝影機。
-   * Anti-spoof 自動跳過（螢幕回放會誤判）。
-   */
-  videoUrl?: string;
 }
 
 export interface VerifyFaceResult {
@@ -129,6 +127,12 @@ interface UseFaceRecognitionReturn {
   cnnReady: boolean;
   /** 防偽分析結果 */
   antiSpoofResult: AntiSpoofResult | null;
+  /** 3D 掃描 zone 進度（註冊模式）: { left, center, right } */
+  scanZones: { left: number; center: number; right: number } | null;
+  /** 3D 掃描 zone 目標幀數 */
+  scanZoneTargets: { left: number; center: number; right: number };
+  /** 目前掃描引導階段 */
+  scanPhase: 'center' | 'right' | 'left' | 'complete' | null;
   /** video element ref */
   videoRef: React.RefObject<HTMLVideoElement | null>;
   /** 啟動相機 + 偵測 */
@@ -151,7 +155,6 @@ export function useFaceRecognition({
   mode,
   matchThreshold = LOGIN_MATCH_THRESHOLD,
   autoLoginThreshold = 0.85,
-  videoUrl,
 }: UseFaceRecognitionOptions): UseFaceRecognitionReturn {
   const [status, setStatus] = useState<FaceDetectionStatus>('idle');
   const [currentChallenge, setCurrentChallenge] = useState<LivenessChallenge | null>(null);
@@ -161,6 +164,15 @@ export function useFaceRecognition({
   const [isVerified, setIsVerified] = useState(false);
   const [cnnReady, setCnnReady] = useState(false);
   const [antiSpoofResult, setAntiSpoofResult] = useState<AntiSpoofResult | null>(null);
+  const [scanZones, setScanZones] = useState<{ left: number; center: number; right: number } | null>(null);
+  const [scanPhase, setScanPhase] = useState<'center' | 'right' | 'left' | 'complete' | null>(null);
+
+  // Zone targets（5 zone 合併成 3 組顯示）
+  const scanZoneTargets = {
+    left: YAW_ZONES[0].target + YAW_ZONES[1].target,    // far-left + left
+    center: YAW_ZONES[2].target,                          // center
+    right: YAW_ZONES[3].target + YAW_ZONES[4].target,   // right + far-right
+  };
 
   // Keep statusRef in sync with state
   const setStatusAndRef = useCallback((s: FaceDetectionStatus) => {
@@ -174,7 +186,6 @@ export function useFaceRecognition({
   const activeDetectorRef = useRef<ActiveLivenessDetector | null>(null);
   const passiveDetectorRef = useRef<PassiveLivenessDetector | null>(null);
   const isRunningRef = useRef(false);
-  const isVideoModeRef = useRef(!!videoUrl);
   const lastTimestampRef = useRef(0);
   const statusRef = useRef<FaceDetectionStatus>('idle');
 
@@ -184,6 +195,7 @@ export function useFaceRecognition({
   const boneRatioResultRef = useRef<BoneRatioPlainData | null>(null);
   // Yaw zone 計數（註冊模式，確保左/中/右均勻分佈）
   const zoneCountsRef = useRef<number[]>([0, 0, 0, 0, 0]);
+  const lastCaptureMsRef = useRef(0);
 
   // Anti-spoof 相關 refs
   const lastCnnTimestampRef = useRef(0);
@@ -209,66 +221,61 @@ export function useFaceRecognition({
 
       // Reset bbox smoothing for new session
       resetBboxSmoothing();
-      isVideoModeRef.current = !!videoUrl;
 
-      if (videoUrl) {
-        // === 影片測試模式 ===
-        devLog('[FaceRec] VIDEO TEST MODE — loading:', videoUrl);
-
-        // MediaPipe 仍然必須
-        await initFaceLandmarker();
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = null;
-          videoRef.current.src = videoUrl;
-          videoRef.current.muted = true;
-          videoRef.current.playsInline = true;
-          videoRef.current.loop = false;
-          await videoRef.current.play();
-          devLog('[FaceRec] Video playing, duration:', videoRef.current.duration?.toFixed(1) + 's');
-        }
-
-        // 影片模式跳過 anti-spoof（螢幕回放會誤判）
-        setCnnReady(true);
-        devLog('[FaceRec] Anti-spoof SKIPPED in video test mode');
-
-      } else {
-        // === 正常相機模式 ===
-        const [cameraResult, mediapipeResult] = await Promise.allSettled([
-          navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-          }),
-          initFaceLandmarker(),
-        ]);
-
-        if (cameraResult.status === 'rejected') {
-          const err = cameraResult.reason as { name?: string; message?: string } | undefined;
-          console.error('[FaceRec] Camera getUserMedia REJECTED:', err?.name, err?.message);
-          throw cameraResult.reason;
-        }
-        if (mediapipeResult.status === 'rejected') {
-          throw mediapipeResult.reason;
-        }
-
-        // Anti-spoof 模型在背景載入
-        if (!isCnnReady()) {
-          initCnnModels().then(() => {
-            setCnnReady(true);
-            devLog('[FaceRec] Anti-spoof model ready (background)');
-          }).catch((err) => {
-            devWarn('[FaceRec] Anti-spoof model failed to load:', err);
+      // 先啟動相機 + MediaPipe（必須），CNN 在背景載入（不阻塞相機啟動）
+      // 嘗試 facingMode: 'user'（前鏡頭），失敗則 fallback 到不指定（E2E/容器環境）
+      let cameraStream: MediaStream | null = null;
+      const mediapipePromise = initFaceLandmarker();
+      try {
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        });
+      } catch (firstErr) {
+        console.error('[FaceRec] Camera facingMode:user failed, trying fallback:', (firstErr as any)?.name);
+        try {
+          cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
           });
-        } else {
-          setCnnReady(true);
-          devLog('[FaceRec] Anti-spoof model already cached');
+          console.error('[FaceRec] Camera fallback succeeded (no facingMode constraint)');
+        } catch (secondErr) {
+          console.error('[FaceRec] Camera fallback also failed:', (secondErr as any)?.name, (secondErr as any)?.message);
+          throw secondErr;
         }
+      }
+      const [cameraResult, mediapipeResult] = await Promise.allSettled([
+        Promise.resolve(cameraStream),
+        mediapipePromise,
+      ]);
 
-        const stream = cameraResult.value as MediaStream;
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
-        }
+      // 相機是必須的
+      if (cameraResult.status === 'rejected' || !cameraResult.value) {
+        const err = cameraResult.status === 'rejected' ? cameraResult.reason as { name?: string; message?: string } : { name: 'NoStream' };
+        console.error('[FaceRec] Camera unavailable:', err?.name);
+        throw cameraResult.status === 'rejected' ? cameraResult.reason : new Error('No camera stream');
+      }
+      // MediaPipe 是必須的
+      if (mediapipeResult.status === 'rejected') {
+        throw mediapipeResult.reason;
+      }
+
+      // Anti-spoof 模型在背景載入（612KB，不阻塞相機啟動）
+      if (!isCnnReady()) {
+        initCnnModels().then(() => {
+          setCnnReady(true);
+          devLog('[FaceRec] Anti-spoof model ready (background)');
+        }).catch((err) => {
+          devWarn('[FaceRec] Anti-spoof model failed to load:', err);
+        });
+      } else {
+        setCnnReady(true);
+        devLog('[FaceRec] Anti-spoof model already cached');
+      }
+
+      const stream = cameraResult.value as MediaStream;
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
       }
 
       // 初始化活體偵測器
@@ -289,7 +296,7 @@ export function useFaceRecognition({
       devWarn('[FaceRec] Camera/model init failed:', err);
       setStatusAndRef('error');
     }
-  }, [mode, videoUrl]);
+  }, [mode]);
 
   const stopCamera = useCallback(() => {
     isRunningRef.current = false;
@@ -306,10 +313,6 @@ export function useFaceRecognition({
 
     if (videoRef.current) {
       videoRef.current.srcObject = null;
-      if (isVideoModeRef.current) {
-        videoRef.current.src = '';
-        videoRef.current.load();
-      }
     }
 
     devLog('[FaceRec] Camera stopped');
@@ -390,9 +393,6 @@ export function useFaceRecognition({
     geometry: ReturnType<typeof extractFaceGeometry>,
     now: number,
   ): Promise<void> => {
-    // 影片測試模式跳過 anti-spoof
-    if (isVideoModeRef.current) return;
-
     // Anti-spoof 未就緒 or 還在跑上一次 → 跳過
     if (!isCnnReady() || cnnRunningRef.current) return;
 
@@ -460,15 +460,42 @@ export function useFaceRecognition({
     if (challenge === 'turn_head' || challenge === 'turn_right' || challenge === 'turn_left') {
       const yaw = detection.yaw ?? 0;
       const zone = getYawZone(yaw);
+      const zoneCount = zoneCountsRef.current[zone];
+      const zoneTarget = YAW_ZONES[zone].target;
 
-      // v17: 高幀率擷取 — 每幀都存，不限間隔
-      const frame: CapturedFrame = {
-        landmarks: detection.landmarks as unknown as Landmark3D[],
-        matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
-        yaw,
-      };
-      capturedFramesRef.current.push(frame);
-      zoneCountsRef.current[zone]++;
+      if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+        const frame: CapturedFrame = {
+          landmarks: detection.landmarks as unknown as Landmark3D[],
+          matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+          yaw,
+        };
+        capturedFramesRef.current.push(frame);
+        zoneCountsRef.current[zone]++;
+        lastCaptureMsRef.current = now;
+
+        // 更新 UI zone 進度（5 zone → 3 組）
+        const z = zoneCountsRef.current;
+        const merged = {
+          left: z[0] + z[1],
+          center: z[2],
+          right: z[3] + z[4],
+        };
+        setScanZones({ ...merged });
+
+        // 計算掃描引導階段
+        const centerDone = merged.center >= scanZoneTargets.center;
+        const rightDone = merged.right >= scanZoneTargets.right;
+        const leftDone = merged.left >= scanZoneTargets.left;
+        if (!centerDone) {
+          setScanPhase('center');
+        } else if (!rightDone) {
+          setScanPhase('right');
+        } else if (!leftDone) {
+          setScanPhase('left');
+        } else {
+          setScanPhase('complete');
+        }
+      }
     }
 
     if (!challenge) {
@@ -484,9 +511,6 @@ export function useFaceRecognition({
             boneRatioResultRef.current = {
               frontalBins: Object.fromEntries(result.frontalBins),
               hash: result.hashes.hashCombined,
-              hash2D: result.hashes.hash2D,
-              hash3D: result.hashes.hash3D,
-              hashCombined: result.hashes.hashCombined,
             };
 
             const antiSpoof = computeAntiSpoofResult();
@@ -606,7 +630,7 @@ export function useFaceRecognition({
       await saveBoneRatioData(boneData, encryptionKey);
       setStatusAndRef('verified');
       setIsVerified(true);
-      devLog('[FaceRec] Face registered — 2D:', (boneData.hash2D ?? '').slice(0, 12) + '... 3D:', (boneData.hash3D ?? '').slice(0, 12) + '... bins:', Object.keys(boneData.frontalBins).length);
+      devLog('[FaceRec] Face registered (bone ratio), hash:', boneData.hash.slice(0, 16) + '...', 'bins:', Object.keys(boneData.frontalBins).length);
       return true;
     } catch (err) {
       devWarn('[FaceRec] Failed to save bone ratio data:', err);
@@ -714,6 +738,9 @@ export function useFaceRecognition({
     isVerified,
     cnnReady,
     antiSpoofResult,
+    scanZones,
+    scanZoneTargets,
+    scanPhase,
     videoRef,
     startCamera,
     stopCamera,
