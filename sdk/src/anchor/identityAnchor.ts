@@ -14,6 +14,13 @@
 import { computeAccountKey } from '../face/structuralId';
 import { encryptWithPin, decryptWithPin } from '../auth/pinHash';
 
+async function sha256hex(str: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 // ============================================================================
 // Config
 // ============================================================================
@@ -88,7 +95,12 @@ export async function registerIdentityAnchor(params: {
     const plaintext = new TextEncoder().encode(JSON.stringify(blob));
     const { encrypted, salt, iv } = await encryptWithPin(plaintext, params.pin);
 
-    // 3. Upload to VPS
+    // 3. Compute pubkey_hash for trust score mapping
+    const pubkeyHash = params.publicKey
+      ? await sha256hex(params.publicKey)
+      : undefined;
+
+    // 4. Upload to VPS
     const response = await fetch(`${_apiBaseUrl}/aegisid/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -98,6 +110,7 @@ export async function registerIdentityAnchor(params: {
         encrypted_blob: encrypted,
         blob_salt: salt,
         blob_iv: iv,
+        ...(pubkeyHash ? { pubkey_hash: pubkeyHash } : {}),
       }),
     });
 

@@ -64,6 +64,7 @@ class AegisIdRegisterRequest(BaseModel):
     encrypted_blob: str = Field(..., min_length=1)
     blob_salt: str = Field(..., min_length=1)
     blob_iv: str = Field(..., min_length=1)
+    pubkey_hash: Optional[str] = Field(None, min_length=64, max_length=64)  # SHA-256(publicKey) — 信任分數映射
 
 
 class AegisIdLookupRequest(BaseModel):
@@ -767,6 +768,13 @@ def create_aegisid_router(
             cursor.execute("""
                 INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('ip', ?)
             """, (ip_hmac,))
+
+            # 信任分數映射：pubkey_hash → account_key（跨設備信任分數持久化）
+            if body.pubkey_hash:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO pubkey_account_map (pubkey_hash, account_key, created_at)
+                    VALUES (?, ?, strftime('%s','now'))
+                """, (body.pubkey_hash, body.account_key))
 
             conn.commit()
 
