@@ -133,6 +133,8 @@ interface UseFaceRecognitionReturn {
   scanZoneTargets: { left: number; center: number; right: number };
   /** 目前掃描引導階段 */
   scanPhase: 'center' | 'right' | 'left' | 'complete' | null;
+  /** 當前 yaw 值（頭部方向，-0.5=右 ~ 0.5=左） */
+  currentYaw: number;
   /** video element ref */
   videoRef: React.RefObject<HTMLVideoElement | null>;
   /** 啟動相機 + 偵測 */
@@ -165,6 +167,7 @@ export function useFaceRecognition({
   const [cnnReady, setCnnReady] = useState(false);
   const [antiSpoofResult, setAntiSpoofResult] = useState<AntiSpoofResult | null>(null);
   const [scanZones, setScanZones] = useState<{ left: number; center: number; right: number } | null>(null);
+  const [currentYaw, setCurrentYaw] = useState<number>(0);
   const [scanPhase, setScanPhase] = useState<'center' | 'right' | 'left' | 'complete' | null>(null);
 
   // Zone targets（5 zone 合併成 3 組顯示）
@@ -459,6 +462,7 @@ export function useFaceRecognition({
     // 只在轉頭掃描階段收集 3D 幀（眨眼不收集，挑戰完成後也不再收集）
     if (challenge === 'turn_head' || challenge === 'turn_right' || challenge === 'turn_left') {
       const yaw = detection.yaw ?? 0;
+      setCurrentYaw(yaw);
       const zone = getYawZone(yaw);
       const zoneCount = zoneCountsRef.current[zone];
       const zoneTarget = YAW_ZONES[zone].target;
@@ -741,6 +745,7 @@ export function useFaceRecognition({
     scanZones,
     scanZoneTargets,
     scanPhase,
+    currentYaw,
     videoRef,
     startCamera,
     stopCamera,
