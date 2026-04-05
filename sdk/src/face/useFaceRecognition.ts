@@ -472,29 +472,29 @@ export function useFaceRecognition({
         capturedFramesRef.current.push(frame);
         zoneCountsRef.current[zone]++;
         lastCaptureMsRef.current = now;
+      }
 
-        // 更新 UI zone 進度（5 zone → 3 組）
-        const z = zoneCountsRef.current;
-        const merged = {
-          left: z[0] + z[1],
-          center: z[2],
-          right: z[3] + z[4],
-        };
-        setScanZones({ ...merged });
+      // 每幀都更新 UI zone 進度（即時反映頭部方向，不只在捕獲成功時）
+      const z = zoneCountsRef.current;
+      const merged = {
+        left: z[0] + z[1],
+        center: z[2],
+        right: z[3] + z[4],
+      };
+      setScanZones({ ...merged });
 
-        // 計算掃描引導階段
-        const centerDone = merged.center >= scanZoneTargets.center;
-        const rightDone = merged.right >= scanZoneTargets.right;
-        const leftDone = merged.left >= scanZoneTargets.left;
-        if (!centerDone) {
-          setScanPhase('center');
-        } else if (!rightDone) {
-          setScanPhase('right');
-        } else if (!leftDone) {
-          setScanPhase('left');
-        } else {
-          setScanPhase('complete');
-        }
+      // 計算掃描引導階段
+      const centerDone = merged.center >= scanZoneTargets.center;
+      const rightDone = merged.right >= scanZoneTargets.right;
+      const leftDone = merged.left >= scanZoneTargets.left;
+      if (!centerDone) {
+        setScanPhase('center');
+      } else if (!rightDone) {
+        setScanPhase('right');
+      } else if (!leftDone) {
+        setScanPhase('left');
+      } else {
+        setScanPhase('complete');
       }
     }
 
