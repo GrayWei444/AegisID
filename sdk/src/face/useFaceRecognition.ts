@@ -32,6 +32,9 @@ import {
   detectSpoof,
   closeCnnModels,
   resetBboxSmoothing,
+  recordFrame,
+  getOcclusionResult,
+  type OcclusionResult,
 } from './cnnInference';
 import {
   saveBoneRatioData,
@@ -127,6 +130,8 @@ interface UseFaceRecognitionReturn {
   cnnReady: boolean;
   /** 防偽分析結果 */
   antiSpoofResult: AntiSpoofResult | null;
+  /** 遮擋偵測結果（口罩/帽子） */
+  occlusion: OcclusionResult;
   /** 3D 掃描 zone 進度（註冊模式）: { left, center, right } */
   scanZones: { left: number; center: number; right: number } | null;
   /** 3D 掃描 zone 目標幀數 */
@@ -284,6 +289,7 @@ export function useFaceRecognition({
       // 初始化活體偵測器
       if (mode === 'register') {
         activeDetectorRef.current = new ActiveLivenessDetector();
+        activeDetectorRef.current.setOcclusionGetter(getOcclusionResult);
         setCurrentChallenge(activeDetectorRef.current.getCurrentChallenge());
         setChallengeProgress(activeDetectorRef.current.getProgress());
       } else {
@@ -371,6 +377,9 @@ export function useFaceRecognition({
 
       const geometry = extractFaceGeometry(detection.landmarks);
 
+      // 記錄 landmarks + video + blendshapes 用於 anti-spoof + 遮擋偵測
+      recordFrame(detection.landmarks, video, detection.blendshapes);
+
       if (mode === 'register') {
         handleRegisterFrame(video, detection, geometry, now);
       } else {
@@ -456,6 +465,14 @@ export function useFaceRecognition({
 
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
     maybeSpoofCapture(video, geometry, now);
+
+    // 遮擋偵測：首次偵測到口罩 → 注入移除挑戰到序列最前
+    const occlusion = getOcclusionResult();
+    if (occlusion.hasMask) {
+      detector.injectOcclusionChallenges(occlusion);
+      setCurrentChallenge(detector.getCurrentChallenge());
+      setChallengeProgress(detector.getProgress());
+    }
 
     const challenge = detector.getCurrentChallenge();
 
@@ -742,6 +759,7 @@ export function useFaceRecognition({
     isVerified,
     cnnReady,
     antiSpoofResult,
+    occlusion: getOcclusionResult(),
     scanZones,
     scanZoneTargets,
     scanPhase,

@@ -49,7 +49,7 @@ export async function initFaceLandmarker(): Promise<FaceLandmarker> {
         minFaceDetectionConfidence: 0.5,
         minFacePresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
-        outputFaceBlendshapes: false,
+        outputFaceBlendshapes: true,
         outputFacialTransformationMatrixes: true,
       });
 
@@ -116,6 +116,15 @@ export function detectFace(
     }
   }
 
+  // Blendshapes — 52 個表情係數
+  let blendshapes: Record<string, number> | undefined;
+  if (result.faceBlendshapes && result.faceBlendshapes.length > 0) {
+    blendshapes = {};
+    for (const cat of result.faceBlendshapes[0].categories) {
+      blendshapes[cat.categoryName] = cat.score;
+    }
+  }
+
   // Yaw 用 landmark 幾何計算（與測試工具一致，比 rotation matrix 更穩定）
   // yaw = (nose.x - eyeMidX) / eyeSpan
   const leX = (landmarks[33].x + landmarks[133].x) / 2;
@@ -126,7 +135,7 @@ export function detectFace(
     ? (landmarks[1].x - eyeMidX) / eyeSpan
     : 0;
 
-  return { landmarks, matrix, yaw };
+  return { landmarks, matrix, yaw, blendshapes };
 }
 
 // ============================================================================

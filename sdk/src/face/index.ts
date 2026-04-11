@@ -95,6 +95,9 @@ export {
   closeAntiSpoofModel,
   closeCnnModels,
   resetBboxSmoothing,
+  recordFrame,
+  getOcclusionResult,
+  type OcclusionResult,
 } from './cnnInference';
 
 // React Hook

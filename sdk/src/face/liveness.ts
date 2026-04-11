@@ -6,6 +6,7 @@
  */
 
 import { devLog } from '../utils/devLog';
+import type { OcclusionResult } from './cnnInference';
 import type {
   FaceGeometry,
   LivenessChallenge,
@@ -59,6 +60,10 @@ export class ActiveLivenessDetector {
   private scanPhase: 'idle' | 'turned_right' | 'turned_left' = 'idle';
   /** Phase 26b: 挑戰期間 embedding 快照 */
   private snapshots: ChallengeEmbeddingSnapshot[] = [];
+  /** 遮擋挑戰是否已注入（防止重複注入） */
+  private occlusionInjected = false;
+  /** 外部傳入的遮擋偵測函式 */
+  private occlusionGetter: (() => OcclusionResult) | null = null;
 
   constructor() {
     this.reset();
@@ -66,15 +71,51 @@ export class ActiveLivenessDetector {
 
   /** 重置偵測器 */
   reset(): void {
+    this.challenges = ['blink', 'turn_head'];
     this.currentIndex = 0;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
     this.scanPhase = 'idle';
     this.snapshots = [];
+    this.occlusionInjected = false;
     this.completed = new Map([
       ['blink', 'waiting'],
       ['turn_head', 'waiting'],
     ]);
+  }
+
+  /** 設定遮擋偵測函式（由 hook 注入） */
+  setOcclusionGetter(getter: () => OcclusionResult): void {
+    this.occlusionGetter = getter;
+  }
+
+  /**
+   * 注入遮擋挑戰到序列最前面（在 blink 之前）
+   * 只在首次偵測到遮擋時呼叫，不會重複注入
+   */
+  injectOcclusionChallenges(occlusion: OcclusionResult): void {
+    if (this.occlusionInjected) return;
+    this.occlusionInjected = true;
+
+    const toInject: LivenessChallenge[] = [];
+    if (occlusion.hasMask) toInject.push('remove_mask');
+
+    if (toInject.length === 0) return;
+
+    // 插入到序列最前面
+    this.challenges = [...toInject, ...this.challenges];
+    // 重置 index 到 0（從遮擋挑戰開始）
+    this.currentIndex = 0;
+    this.challengeStartTime = Date.now();
+    // 重置眨眼狀態，避免中斷的 blink 進度導致之後自動通過
+    this.wasEyesClosed = false;
+
+    // 更新 completed map
+    for (const c of toInject) {
+      this.completed.set(c, 'waiting');
+    }
+
+    devLog('[Liveness] Occlusion challenges injected:', toInject);
   }
 
   /** 取得目前的挑戰 */
@@ -107,6 +148,19 @@ export class ActiveLivenessDetector {
     const noseX = geometry.noseOffsetX;
 
     switch (challenge) {
+      case 'remove_mask': {
+        // 遮擋挑戰：等待用戶移除口罩
+        if (this.occlusionGetter) {
+          const current = this.occlusionGetter();
+          if (!current.hasMask) {
+            devLog('[Liveness] Mask removed');
+            this.completed.set('remove_mask', 'detected');
+            this.advanceChallenge();
+          }
+        }
+        break;
+      }
+
       case 'blink': {
         if (avgEAR < THRESHOLDS.BLINK_EAR) {
           this.wasEyesClosed = true;

@@ -30,7 +30,7 @@ export interface BoundingBox {
 // ============================================================================
 
 /** 活體挑戰類型 */
-export type LivenessChallenge = 'blink' | 'turn_head' | 'turn_right' | 'turn_left';
+export type LivenessChallenge = 'blink' | 'turn_head' | 'turn_right' | 'turn_left' | 'remove_mask';
 
 /** 活體挑戰狀態 */
 export type LivenessChallengeStatus = 'waiting' | 'detected' | 'timeout';
@@ -155,6 +155,8 @@ export interface FaceDetectionResult {
   matrix?: { data: number[] };
   /** Y 軸旋轉角度 (radians)，正 = 向右轉 */
   yaw?: number;
+  /** 52 個 blendshape 表情係數 (0-1) */
+  blendshapes?: Record<string, number>;
 }
 
 // ============================================================================
