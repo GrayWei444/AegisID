@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>AegisID Touch Lab</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a1a; color: #e0e0e0; font-family: -apple-system, sans-serif; padding: 12px; touch-action: none; user-select: none; }
+h1 { color: #00e5ff; font-size: 1.1em; margin-bottom: 4px; }
+h2 { font-size: 0.85em; margin: 12px 0 6px; }
+.btn { display: inline-block; padding: 8px 14px; margin: 3px; border-radius: 8px; border: 2px solid #333; background: #1a1a2e; color: #00e5ff; font-size: 0.8em; font-weight: 700; }
+.btn:active { background: #2a2a4e; }
+#device-info { color: #888; font-size: 0.65em; margin-bottom: 6px; }
+.tab-bar { display: flex; gap: 0; margin: 8px 0; }
+.tab { flex: 1; padding: 10px 0; text-align: center; background: #111; color: #666; font-size: 0.75em; font-weight: 700; border: 1px solid #222; cursor: pointer; }
+.tab.active { background: #1a1a3e; color: #00e5ff; border-bottom: 2px solid #00e5ff; }
+.panel { display: none; }
+.panel.active { display: block; }
+.c { color: #00e5ff; }
+.y { color: #ffc107; }
+.g { color: #0f0; }
+.r { color: #f44; }
+.o { color: #f97316; }
+.p { color: #a855f7; }
+table { width: 100%; border-collapse: collapse; font-size: 0.65em; }
+th, td { padding: 2px 3px; text-align: center; border-bottom: 1px solid #1a1a2a; }
+th { color: #888; font-size: 0.9em; }
+
+/* Swipe Up area */
+#swipe-zone {
+  position: relative;
+  width: 100%;
+  height: 420px;
+  background: linear-gradient(180deg, #0a0a2a 0%, #1a0a2a 100%);
+  border-radius: 16px;
+  border: 2px solid #333;
+  margin: 8px 0;
+  overflow: hidden;
+}
+#swipe-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 100%;
+}
+.swipe-hint {
+  position: absolute;
+  bottom: 40px;
+  width: 100%;
+  text-align: center;
+  color: #555;
+  font-size: 0.9em;
+}
+.swipe-bar {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 5px;
+  border-radius: 3px;
+  background: #444;
+}
+#swipe-status { color: #888; font-size: 0.8em; margin: 4px 0; }
+#swipe-results { font-size: 0.6em; background: #111; padding: 8px; border-radius: 8px; margin-top: 8px; max-height: 45vh; overflow-y: auto; }
+</style>
+</head>
+<body>
+<h1>AegisID Touch Lab</h1>
+<div id="device-info">Loading...</div>
+
+<div class="tab-bar">
+  <div class="tab active" onclick="switchTab(0)">Swipe Up</div>
+  <div class="tab" onclick="switchTab(1)">PIN + Swipe</div>
+</div>
+
+<!-- ===== TAB 0: SWIPE UP TEST ===== -->
+<div class="panel active" id="panel-swipe">
+  <div>
+    <button class="btn" onclick="startSwipe('A')">Finger A (5次)</button>
+    <button class="btn" onclick="startSwipe('B')">Finger B (5次)</button>
+    <button class="btn" onclick="compareSwipe()">Compare</button>
+    <button class="btn" onclick="clearSwipe()">Clear</button>
+  </div>
+  <div id="swipe-status">從底部往上滑 — 像 iPhone 解鎖</div>
+  <div id="swipe-zone">
+    <canvas id="swipe-canvas"></canvas>
+    <div class="swipe-hint">⬆ 往上滑</div>
+    <div class="swipe-bar"></div>
+  </div>
+  <div id="swipe-results"></div>
+</div>
+
+<!-- ===== TAB 1: PIN INPUT + SWIPE ===== -->
+<div class="panel" id="panel-pin">
+  <p style="color:#888;font-size:0.75em;margin:4px 0">輸入 PIN 後往上滑確認 — PIN 時序 + 滑動手勢 聯合辨識</p>
+  <div>
+    <button class="btn" onclick="startPinSwipe('A')">Finger A</button>
+    <button class="btn" onclick="startPinSwipe('B')">Finger B</button>
+    <button class="btn" onclick="comparePinSwipe()">Compare</button>
+  </div>
+  <div id="pin-display" style="text-align:center;font-size:2em;letter-spacing:12px;color:#00e5ff;margin:8px 0;height:40px">____</div>
+  <div id="pin-pad" style="width:280px;margin:0 auto"></div>
+  <div id="pin-swipe-zone" style="position:relative;width:100%;height:120px;background:#111;border-radius:12px;border:2px solid #333;margin:8px 0;overflow:hidden">
+    <canvas id="pin-swipe-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%"></canvas>
+    <div style="position:absolute;bottom:10px;width:100%;text-align:center;color:#444;font-size:0.8em">⬆ 輸完 PIN 往上滑確認</div>
+    <div style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);width:80px;height:4px;border-radius:2px;background:#333"></div>
+  </div>
+  <div id="pin-status" style="color:#888;font-size:0.8em;margin:4px 0">Ready</div>
+  <div id="pin-results" style="font-size:0.6em;background:#111;padding:8px;border-radius:8px;margin-top:8px;max-height:40vh;overflow-y:auto"></div>
+</div>
+
+<script type="module">
+import { Capacitor, registerPlugin } from 'https://esm.sh/@capacitor/core@8';
+var NativeTouch = registerPlugin('NativeTouch');
+window.NativeTouch = NativeTouch;
+try {
+  var info = await NativeTouch.getDeviceInfo();
+  document.getElementById('device-info').textContent =
+    info.manufacturer + ' ' + info.model + ' | Android ' + info.release +
+    ' (SDK ' + info.sdkVersion + ') | ' + info.screenWidth + 'x' + info.screenHeight +
+    ' @' + info.density + 'x';
+} catch(e) {
+  document.getElementById('device-info').textContent = 'Native plugin not available';
+}
+</script>
+
+<script>
+// ===== TAB SWITCHING =====
+var tabs = document.querySelectorAll('.tab');
+var panels = document.querySelectorAll('.panel');
+function switchTab(idx) {
+  tabs.forEach(function(t,i) { t.classList.toggle('active', i===idx); });
+  panels.forEach(function(p,i) { p.classList.toggle('active', i===idx); });
+}
+window.switchTab = switchTab;
+
+// ========================================
+// TAB 0: SWIPE UP TEST
+// ========================================
+var swipeData = { A: [], B: [] };
+var swipeGroup = null;
+var swipeCount = 0;
+var MAX_SWIPES = 5;
+var currentSwipe = []; // [{x,y,t}]
+var swiping = false;
+
+var swipeZone = document.getElementById('swipe-zone');
+var swipeCanvas = document.getElementById('swipe-canvas');
+var swipeCtx;
+
+function initSwipeCanvas() {
+  swipeCanvas.width = swipeZone.clientWidth * 2;
+  swipeCanvas.height = swipeZone.clientHeight * 2;
+  swipeCanvas.style.width = swipeZone.clientWidth + 'px';
+  swipeCanvas.style.height = swipeZone.clientHeight + 'px';
+  swipeCtx = swipeCanvas.getContext('2d');
+}
+
+function startSwipe(group) {
+  swipeGroup = group;
+  swipeData[group] = [];
+  swipeCount = 0;
+  initSwipeCanvas();
+  clearCanvas(swipeCtx, swipeCanvas);
+  document.getElementById('swipe-status').textContent =
+    'Finger ' + group + ': 從底部往上滑 0/' + MAX_SWIPES;
+}
+
+swipeZone.addEventListener('touchstart', function(e) {
+  if (!swipeGroup) return;
+  e.preventDefault();
+  swiping = true;
+  currentSwipe = [];
+  addSwipePoint(e.touches[0]);
+}, { passive: false });
+
+swipeZone.addEventListener('touchmove', function(e) {
+  if (!swipeGroup || !swiping) return;
+  e.preventDefault();
+  addSwipePoint(e.touches[0]);
+  drawCurrentSwipe();
+}, { passive: false });
+
+swipeZone.addEventListener('touchend', function(e) {
+  if (!swipeGroup || !swiping) return;
+  e.preventDefault();
+  swiping = false;
+
+  // Validate: must be upward swipe (dy < -80px)
+  if (currentSwipe.length < 5) return;
+  var dy = currentSwipe[currentSwipe.length-1].y - currentSwipe[0].y;
+  if (dy > -60) {
+    document.getElementById('swipe-status').textContent =
+      'Finger ' + swipeGroup + ': 要往上滑！ ' + swipeCount + '/' + MAX_SWIPES;
+    return;
+  }
+
+  swipeCount++;
+  swipeData[swipeGroup].push(currentSwipe.slice());
+  drawSavedSwipe(currentSwipe, swipeGroup, swipeCount - 1);
+
+  if (swipeCount >= MAX_SWIPES) {
+    swipeGroup = null;
+    document.getElementById('swipe-status').textContent =
+      'Finger ' + (swipeData.A.length ? 'A' : '?') + ': ' + swipeData.A.length + ' swipes, ' +
+      'Finger ' + (swipeData.B.length ? 'B' : '?') + ': ' + swipeData.B.length + ' swipes. Ready.';
+  } else {
+    document.getElementById('swipe-status').textContent =
+      'Finger ' + swipeGroup + ': ' + swipeCount + '/' + MAX_SWIPES;
+  }
+}, { passive: false });
+
+function addSwipePoint(touch) {
+  var rect = swipeZone.getBoundingClientRect();
+  currentSwipe.push({
+    x: touch.clientX - rect.left,
+    y: touch.clientY - rect.top,
+    t: performance.now()
+  });
+}
+
+function clearCanvas(ctx, canvas) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawCurrentSwipe() {
+  clearCanvas(swipeCtx, swipeCanvas);
+  // Redraw saved swipes
+  for (var g = 0; g < 2; g++) {
+    var gn = g === 0 ? 'A' : 'B';
+    var swipes = swipeData[gn];
+    for (var s = 0; s < swipes.length; s++) {
+      drawSwipePath(swipeCtx, swipes[s], gn, 0.3);
+    }
+  }
+  // Draw current
+  if (currentSwipe.length > 1) {
+    drawSwipePath(swipeCtx, currentSwipe, swipeGroup, 0.8);
+  }
+}
+
+function drawSavedSwipe(swipe, group, idx) {
+  drawSwipePath(swipeCtx, swipe, group, 0.5);
+}
+
+function drawSwipePath(ctx, pts, group, alpha) {
+  if (pts.length < 2) return;
+  var color = group === 'A' ? '0,229,255' : '255,193,7';
+  ctx.strokeStyle = 'rgba(' + color + ',' + alpha + ')';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x * 2, pts[0].y * 2);
+  for (var i = 1; i < pts.length; i++) {
+    ctx.lineTo(pts[i].x * 2, pts[i].y * 2);
+  }
+  ctx.stroke();
+  // Start dot
+  ctx.fillStyle = 'rgba(' + color + ',' + Math.min(alpha + 0.3, 1) + ')';
+  ctx.beginPath();
+  ctx.arc(pts[0].x * 2, pts[0].y * 2, 6, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function clearSwipe() {
+  swipeData = { A: [], B: [] };
+  swipeGroup = null;
+  swipeCount = 0;
+  initSwipeCanvas();
+  clearCanvas(swipeCtx, swipeCanvas);
+  document.getElementById('swipe-status').textContent = '從底部往上滑 — 像 iPhone 解鎖';
+  document.getElementById('swipe-results').innerHTML = '';
+}
+
+function compareSwipe() {
+  var a = swipeData.A, b = swipeData.B;
+  if (!a.length || !b.length) { alert('Need both A and B'); return; }
+
+  var featA = a.map(extractSwipeFeatures);
+  var featB = b.map(extractSwipeFeatures);
+
+  var html = '<h2 class="c">Swipe Up: Finger A vs B</h2>';
+  html += '<p style="color:#888">A: ' + a.length + ' swipes, B: ' + b.length + ' swipes</p>';
+
+  // Feature comparison table
+  var keys = Object.keys(featA[0]);
+  html += '<table><tr><th style="text-align:left">Feature</th><th class="c">A avg</th><th>A std</th><th class="y">B avg</th><th>B std</th><th>Diff%</th><th>SNR</th></tr>';
+
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var aVals = featA.map(function(f) { return f[k]; });
+    var bVals = featB.map(function(f) { return f[k]; });
+    var aAvg = avg(aVals), bAvg = avg(bVals);
+    var aStd = std(aVals), bStd = std(bVals);
+    var diff = aAvg !== 0 ? Math.round(Math.abs(bAvg - aAvg) / Math.abs(aAvg) * 100) : (bAvg !== 0 ? 999 : 0);
+    var noise = (aStd + bStd) / 2;
+    var snr = noise > 0 ? (Math.abs(bAvg - aAvg) / noise).toFixed(1) : '—';
+    var dc = diff > 20 ? 'g' : (diff > 5 ? 'y' : 'r');
+    var sc = parseFloat(snr) > 2 ? 'g' : (parseFloat(snr) > 1 ? 'y' : 'r');
+    html += '<tr><td style="text-align:left">' + k + '</td>';
+    html += '<td class="c">' + aAvg.toFixed(2) + '</td><td>' + aStd.toFixed(2) + '</td>';
+    html += '<td class="y">' + bAvg.toFixed(2) + '</td><td>' + bStd.toFixed(2) + '</td>';
+    html += '<td class="' + dc + '">' + diff + '%</td>';
+    html += '<td class="' + sc + '">' + snr + '</td></tr>';
+  }
+  html += '</table>';
+
+  // Velocity profiles
+  html += '<h2 class="p" style="margin-top:12px">Velocity Profiles</h2>';
+  html += '<canvas id="vel-canvas" width="600" height="300" style="width:100%;height:150px;background:#111;border-radius:8px"></canvas>';
+
+  // Per-swipe raw data
+  html += '<h2 class="o" style="margin-top:12px">Per-Swipe Features</h2>';
+  html += '<table><tr><th>#</th><th>Grp</th><th>Dur</th><th>Len</th><th>AvgSpd</th><th>MaxSpd</th><th>StartX</th><th>Curve</th><th>AccPeak</th></tr>';
+  for (var g = 0; g < 2; g++) {
+    var feats = g === 0 ? featA : featB;
+    var gn = g === 0 ? 'A' : 'B';
+    var gc = g === 0 ? 'c' : 'y';
+    for (var j = 0; j < feats.length; j++) {
+      var f = feats[j];
+      html += '<tr><td>' + (j+1) + '</td><td class="' + gc + '">' + gn + '</td>';
+      html += '<td>' + f.duration.toFixed(0) + '</td>';
+      html += '<td>' + f.pathLength.toFixed(0) + '</td>';
+      html += '<td>' + f.avgSpeed.toFixed(1) + '</td>';
+      html += '<td>' + f.maxSpeed.toFixed(1) + '</td>';
+      html += '<td>' + f.startX.toFixed(0) + '</td>';
+      html += '<td>' + f.curvature.toFixed(3) + '</td>';
+      html += '<td>' + f.accelPeakPos.toFixed(2) + '</td></tr>';
+    }
+  }
+  html += '</table>';
+
+  document.getElementById('swipe-results').innerHTML = html;
+
+  // Draw velocity profiles
+  setTimeout(function() { drawVelocityProfiles(a, b); }, 50);
+}
+
+function extractSwipeFeatures(pts) {
+  var n = pts.length;
+  var t0 = pts[0].t;
+  var duration = pts[n-1].t - t0;
+
+  // Path length and speeds
+  var pathLength = 0;
+  var speeds = [];
+  var accels = [];
+  for (var i = 1; i < n; i++) {
+    var dx = pts[i].x - pts[i-1].x;
+    var dy = pts[i].y - pts[i-1].y;
+    var dt = pts[i].t - pts[i-1].t;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+    pathLength += dist;
+    var spd = dt > 0 ? dist / dt : 0;
+    speeds.push(spd);
+    if (speeds.length >= 2) {
+      var prevSpd = speeds[speeds.length - 2];
+      accels.push(dt > 0 ? (spd - prevSpd) / dt : 0);
+    }
+  }
+
+  var maxSpeed = Math.max.apply(null, speeds);
+  var avgSpeed = pathLength / (duration || 1);
+
+  // Where does max speed occur? (0=start, 1=end)
+  var maxSpeedPos = speeds.indexOf(maxSpeed) / (speeds.length || 1);
+
+  // Acceleration peak position
+  var maxAccel = 0, maxAccelIdx = 0;
+  for (var i = 0; i < accels.length; i++) {
+    if (Math.abs(accels[i]) > Math.abs(maxAccel)) {
+      maxAccel = accels[i];
+      maxAccelIdx = i;
+    }
+  }
+  var accelPeakPos = accels.length > 0 ? maxAccelIdx / accels.length : 0;
+
+  // Start/end positions (normalized to zone size)
+  var startX = pts[0].x;
+  var startY = pts[0].y;
+  var endX = pts[n-1].x;
+  var endY = pts[n-1].y;
+
+  // Straightness: direct distance / path length
+  var directDist = Math.sqrt(Math.pow(endX - startX, 2) + Math.pow(endY - startY, 2));
+  var straightness = pathLength > 0 ? directDist / pathLength : 1;
+
+  // Curvature: average deviation from straight line
+  var curvature = 0;
+  if (n > 2) {
+    var lineAngle = Math.atan2(endY - startY, endX - startX);
+    for (var i = 1; i < n - 1; i++) {
+      var ptAngle = Math.atan2(pts[i].y - startY, pts[i].x - startX);
+      curvature += Math.abs(ptAngle - lineAngle);
+    }
+    curvature /= (n - 2);
+  }
+
+  // X drift (how much horizontal movement)
+  var xDrift = endX - startX;
+
+  // Speed at 25%, 50%, 75% of path
+  var s25 = speeds[Math.floor(speeds.length * 0.25)] || 0;
+  var s50 = speeds[Math.floor(speeds.length * 0.50)] || 0;
+  var s75 = speeds[Math.floor(speeds.length * 0.75)] || 0;
+
+  // Speed ratio: early vs late
+  var earlySpeed = 0, lateSpeed = 0;
+  var half = Math.floor(speeds.length / 2);
+  for (var i = 0; i < half; i++) earlySpeed += speeds[i];
+  for (var i = half; i < speeds.length; i++) lateSpeed += speeds[i];
+  earlySpeed /= (half || 1);
+  lateSpeed /= ((speeds.length - half) || 1);
+  var speedRatio = lateSpeed > 0 ? earlySpeed / lateSpeed : 0;
+
+  // Jerk (change in acceleration)
+  var totalJerk = 0;
+  for (var i = 1; i < accels.length; i++) {
+    totalJerk += Math.abs(accels[i] - accels[i-1]);
+  }
+  var avgJerk = accels.length > 1 ? totalJerk / (accels.length - 1) : 0;
+
+  return {
+    duration: duration,
+    pathLength: pathLength,
+    avgSpeed: avgSpeed,
+    maxSpeed: maxSpeed,
+    maxSpeedPos: maxSpeedPos,
+    startX: startX,
+    startY: startY,
+    endX: endX,
+    endY: endY,
+    xDrift: xDrift,
+    straightness: straightness,
+    curvature: curvature,
+    speedRatio: speedRatio,
+    accelPeakPos: accelPeakPos,
+    s25: s25,
+    s50: s50,
+    s75: s75,
+    avgJerk: avgJerk,
+    samples: n,
+  };
+}
+
+function drawVelocityProfiles(swipesA, swipesB) {
+  var canvas = document.getElementById('vel-canvas');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 600, 300);
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, 600, 300);
+
+  // Axis
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(40, 10); ctx.lineTo(40, 270); ctx.lineTo(590, 270);
+  ctx.stroke();
+  ctx.fillStyle = '#555';
+  ctx.font = '11px sans-serif';
+  ctx.fillText('Speed', 2, 20);
+  ctx.fillText('Time %', 550, 290);
+
+  var allSwipes = [];
+  for (var i = 0; i < swipesA.length; i++) allSwipes.push({ pts: swipesA[i], group: 'A' });
+  for (var i = 0; i < swipesB.length; i++) allSwipes.push({ pts: swipesB[i], group: 'B' });
+
+  // Find max speed for scaling
+  var globalMax = 0;
+  for (var s = 0; s < allSwipes.length; s++) {
+    var pts = allSwipes[s].pts;
+    for (var i = 1; i < pts.length; i++) {
+      var dx = pts[i].x - pts[i-1].x, dy = pts[i].y - pts[i-1].y;
+      var dt = pts[i].t - pts[i-1].t;
+      var spd = dt > 0 ? Math.sqrt(dx*dx+dy*dy) / dt : 0;
+      if (spd > globalMax) globalMax = spd;
+    }
+  }
+
+  // Draw each velocity profile normalized to 0-100% time
+  for (var s = 0; s < allSwipes.length; s++) {
+    var pts = allSwipes[s].pts;
+    var color = allSwipes[s].group === 'A' ? 'rgba(0,229,255,0.6)' : 'rgba(255,193,7,0.6)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    var t0 = pts[0].t, tEnd = pts[pts.length-1].t, tRange = tEnd - t0 || 1;
+    for (var i = 1; i < pts.length; i++) {
+      var dx = pts[i].x - pts[i-1].x, dy = pts[i].y - pts[i-1].y;
+      var dt = pts[i].t - pts[i-1].t;
+      var spd = dt > 0 ? Math.sqrt(dx*dx+dy*dy) / dt : 0;
+      var tPct = (pts[i].t - t0) / tRange;
+      var px = 40 + tPct * 550;
+      var py = 270 - (spd / (globalMax || 1)) * 250;
+      if (i === 1) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+
+  // Legend
+  ctx.fillStyle = '#00e5ff';
+  ctx.fillText('— Finger A', 60, 20);
+  ctx.fillStyle = '#ffc107';
+  ctx.fillText('— Finger B', 160, 20);
+}
+
+function avg(arr) {
+  if (!arr.length) return 0;
+  var s = 0; for (var i = 0; i < arr.length; i++) s += arr[i];
+  return s / arr.length;
+}
+function std(arr) {
+  if (arr.length < 2) return 0;
+  var m = avg(arr);
+  var s = 0; for (var i = 0; i < arr.length; i++) { var d = arr[i] - m; s += d*d; }
+  return Math.sqrt(s / arr.length);
+}
+
+window.startSwipe = startSwipe;
+window.compareSwipe = compareSwipe;
+window.clearSwipe = clearSwipe;
+
+// ========================================
+// TAB 1: PIN + SWIPE
+// ========================================
+var PIN_TARGET = '1234';
+var pinSwipeData = { A: null, B: null };
+var pinGroup = null;
+var pinDigits = [];
+var pinKeyTimes = []; // [{digit, downTime, upTime}]
+var pinSwipeTrail = [];
+var pinPhase = 'idle'; // idle, pin, swipe
+
+// Create pin pad
+(function initPinPad() {
+  var pad = document.getElementById('pin-pad');
+  var layout = [[1,2,3],[4,5,6],[7,8,9],[null,0,null]];
+  for (var r = 0; r < layout.length; r++) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:center;gap:8px;margin:4px 0';
+    for (var c = 0; c < layout[r].length; c++) {
+      var d = layout[r][c];
+      var btn = document.createElement('div');
+      if (d === null) {
+        btn.style.cssText = 'width:80px;height:52px';
+      } else {
+        btn.style.cssText = 'width:80px;height:52px;border-radius:12px;background:#1a1a2e;border:2px solid #333;display:flex;align-items:center;justify-content:center;color:#00e5ff;font-size:1.3em;font-weight:700';
+        btn.textContent = d;
+        btn.dataset.digit = d;
+        btn.addEventListener('touchstart', pinKeyDown, { passive: false });
+        btn.addEventListener('touchend', pinKeyUp, { passive: false });
+      }
+      row.appendChild(btn);
+    }
+    pad.appendChild(row);
+  }
+})();
+
+function startPinSwipe(group) {
+  pinGroup = group;
+  pinDigits = [];
+  pinKeyTimes = [];
+  pinSwipeTrail = [];
+  pinPhase = 'pin';
+  updatePinDisplay();
+  document.getElementById('pin-status').textContent = 'Finger ' + group + ': 輸入 PIN ' + PIN_TARGET;
+  var c = document.getElementById('pin-swipe-canvas');
+  c.width = c.parentElement.clientWidth * 2;
+  c.height = c.parentElement.clientHeight * 2;
+  c.getContext('2d').clearRect(0, 0, c.width, c.height);
+}
+
+function pinKeyDown(e) {
+  if (pinPhase !== 'pin') return;
+  e.preventDefault();
+  var digit = e.target.dataset.digit;
+  pinKeyTimes.push({ digit: digit, downTime: performance.now(), upTime: null });
+  e.target.style.background = '#2a2a4e';
+}
+
+function pinKeyUp(e) {
+  if (pinPhase !== 'pin') return;
+  e.preventDefault();
+  var digit = e.target.dataset.digit;
+  e.target.style.background = '#1a1a2e';
+
+  // Find matching down event
+  for (var i = pinKeyTimes.length - 1; i >= 0; i--) {
+    if (pinKeyTimes[i].digit === digit && pinKeyTimes[i].upTime === null) {
+      pinKeyTimes[i].upTime = performance.now();
+      break;
+    }
+  }
+
+  pinDigits.push(digit);
+  updatePinDisplay();
+
+  if (pinDigits.length >= PIN_TARGET.length) {
+    pinPhase = 'swipe';
+    var pinStr = pinDigits.join('');
+    var match = pinStr === PIN_TARGET;
+    document.getElementById('pin-status').textContent =
+      'PIN: ' + pinStr + (match ? ' ✓' : ' ✗') + ' — 現在往上滑確認';
+  }
+}
+
+function updatePinDisplay() {
+  var display = '';
+  for (var i = 0; i < PIN_TARGET.length; i++) {
+    display += i < pinDigits.length ? '●' : '_';
+  }
+  document.getElementById('pin-display').textContent = display;
+}
+
+// Pin swipe zone
+var pinSwipeZone = document.getElementById('pin-swipe-zone');
+var pinSwiping = false;
+
+pinSwipeZone.addEventListener('touchstart', function(e) {
+  if (pinPhase !== 'swipe') return;
+  e.preventDefault();
+  pinSwiping = true;
+  pinSwipeTrail = [];
+  addPinSwipePoint(e.touches[0]);
+}, { passive: false });
+
+pinSwipeZone.addEventListener('touchmove', function(e) {
+  if (pinPhase !== 'swipe' || !pinSwiping) return;
+  e.preventDefault();
+  addPinSwipePoint(e.touches[0]);
+}, { passive: false });
+
+pinSwipeZone.addEventListener('touchend', function(e) {
+  if (pinPhase !== 'swipe' || !pinSwiping) return;
+  e.preventDefault();
+  pinSwiping = false;
+
+  if (pinSwipeTrail.length < 5) return;
+  var dy = pinSwipeTrail[pinSwipeTrail.length-1].y - pinSwipeTrail[0].y;
+  if (dy > -20) {
+    document.getElementById('pin-status').textContent = '要往上滑！';
+    return;
+  }
+
+  // Save
+  pinSwipeData[pinGroup] = {
+    pin: pinDigits.join(''),
+    keyTimes: pinKeyTimes.slice(),
+    swipe: pinSwipeTrail.slice()
+  };
+  pinPhase = 'idle';
+  pinGroup = null;
+  document.getElementById('pin-status').textContent =
+    'Captured. ' + (pinSwipeData.A && pinSwipeData.B ? 'Ready to compare.' : 'Capture other finger.');
+}, { passive: false });
+
+function addPinSwipePoint(touch) {
+  var rect = pinSwipeZone.getBoundingClientRect();
+  pinSwipeTrail.push({
+    x: touch.clientX - rect.left,
+    y: touch.clientY - rect.top,
+    t: performance.now()
+  });
+}
+
+function comparePinSwipe() {
+  var a = pinSwipeData.A, b = pinSwipeData.B;
+  if (!a || !b) { alert('Need both A and B'); return; }
+
+  var html = '<h2 class="c">PIN + Swipe Combined</h2>';
+  html += '<p style="color:#888">A PIN: ' + a.pin + ', B PIN: ' + b.pin + '</p>';
+
+  // PIN timing features
+  html += '<h2 class="o">PIN Timing Features</h2>';
+  var aPin = extractPinTimingFeatures(a.keyTimes);
+  var bPin = extractPinTimingFeatures(b.keyTimes);
+  html += featureTable(aPin, bPin);
+
+  // Swipe features
+  html += '<h2 class="p">Swipe Features</h2>';
+  var aSwipe = extractSwipeFeatures(a.swipe);
+  var bSwipe = extractSwipeFeatures(b.swipe);
+  html += featureTable(aSwipe, bSwipe);
+
+  document.getElementById('pin-results').innerHTML = html;
+}
+
+function extractPinTimingFeatures(keyTimes) {
+  if (keyTimes.length < 2) return {};
+  var dwells = [];
+  var flights = [];
+  for (var i = 0; i < keyTimes.length; i++) {
+    dwells.push(keyTimes[i].upTime - keyTimes[i].downTime);
+    if (i > 0) {
+      flights.push(keyTimes[i].downTime - keyTimes[i-1].upTime);
+    }
+  }
+  var totalTime = keyTimes[keyTimes.length-1].upTime - keyTimes[0].downTime;
+  var result = { totalTime: totalTime };
+
+  // Dwell proportions
+  var dwellSum = dwells.reduce(function(a,b){return a+b;}, 0);
+  for (var i = 0; i < dwells.length; i++) {
+    result['dwellProp' + (i+1)] = dwellSum > 0 ? dwells[i] / dwellSum : 0;
+  }
+
+  // Dwell comparisons (binary: which key held longer)
+  for (var i = 0; i < dwells.length; i++) {
+    for (var j = i+1; j < dwells.length; j++) {
+      var diff = dwells[i] - dwells[j];
+      result['dw' + (i+1) + 'v' + (j+1)] = Math.abs(diff) < 8 ? 0 : (diff > 0 ? 1 : -1);
+    }
+  }
+
+  // Flight proportions
+  var flightSum = flights.reduce(function(a,b){return a+b;}, 0);
+  for (var i = 0; i < flights.length; i++) {
+    result['flightProp' + (i+1)] = flightSum > 0 ? flights[i] / flightSum : 0;
+  }
+
+  return result;
+}
+
+function featureTable(aFeat, bFeat) {
+  var keys = Object.keys(aFeat);
+  var html = '<table><tr><th style="text-align:left">Feature</th><th class="c">A</th><th class="y">B</th><th>Diff%</th></tr>';
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var va = aFeat[k] || 0, vb = bFeat[k] || 0;
+    var diff = va !== 0 ? Math.round(Math.abs(vb - va) / Math.abs(va) * 100) : (vb !== 0 ? 999 : 0);
+    var dc = diff > 20 ? 'g' : (diff > 5 ? 'y' : 'r');
+    html += '<tr><td style="text-align:left">' + k + '</td>';
+    html += '<td class="c">' + va.toFixed(3) + '</td>';
+    html += '<td class="y">' + vb.toFixed(3) + '</td>';
+    html += '<td class="' + dc + '">' + diff + '%</td></tr>';
+  }
+  html += '</table>';
+  return html;
+}
+
+window.startPinSwipe = startPinSwipe;
+window.comparePinSwipe = comparePinSwipe;
+</script>
+</body>
+</html>

@@ -633,9 +633,28 @@ function quantize3D(v, bw) {
   return Math.floor(raw);
 }
 
-// Per-feature adaptive bin widths (初始全部 0.25, Auto BW 校正後更新)
-var PER_FEATURE_BW = {};
-var autoBWEnabled = false;
+// Per-feature adaptive bin widths (v3 — 保守策略，全部上調一級)
+// v1/v2 的 3 輪校正低估了真實跨掃描變動，改用更保守的分級
+var PER_FEATURE_BW = {
+  // 2D: Tier 1 — 自比率（最穩定）→ BW=0.05
+  'EL02': 0.05, 'ER02': 0.05, 'N03': 0.05, 'N04': 0.05,
+  // 2D: Tier 2 — 骨骼比率 → BW=0.08
+  'B04': 0.08, 'B05': 0.08, 'B01': 0.08, 'N02': 0.08, 'N10': 0.08,
+  'EL04': 0.08, 'ER06': 0.08, 'B02': 0.08, 'N01': 0.08, 'X03': 0.08,
+  // 2D: Tier 3 — 垂直/ref → BW=0.10
+  'F02': 0.10, 'F03': 0.10, 'EL06': 0.10, 'B06': 0.10, 'B07': 0.10,
+  // 2D: Tier 4 — 跨區比率 → BW=0.15
+  'EL03': 0.15, 'EL08': 0.15, 'ER03': 0.15, 'ER04': 0.15, 'ER08': 0.15,
+  'X05': 0.15,
+  // 3D features (3D 變動比 2D 大，BW 更寬)
+  'E05_intercanthal': 0.08, 'E04_orbital_width_R': 0.10,
+  'N05_alar_width_3d': 0.10, 'E03_orbital_width_L': 0.08,
+  'F05_face_side': 0.10, 'G02_face_width_height': 0.15,
+  'T03_cheek_jaw_ratio': 0.15, 'T02_temple_recess': 0.15,
+  'T01_temple_width': 0.20, 'T05_bizygomatic': 0.20,
+  'F04_bigonial': 0.25
+};
+var autoBWEnabled = true;
 
 function getFeatureBW(featureId, is3D) {
   if (autoBWEnabled && PER_FEATURE_BW[featureId]) return PER_FEATURE_BW[featureId];
@@ -1869,11 +1888,11 @@ function selectBestFrames(allRawFrames, zoneTargets) {
 
 // Yaw zones for auto-capture
 var YAW_ZONES = [
-  { name: 'far-left',  min:  0.20, max:  0.50, target: 4, color: '#a855f7' },
-  { name: 'left',      min:  0.08, max:  0.20, target: 4, color: '#7c3aed' },
-  { name: 'center',    min: -0.08, max:  0.08, target: 6, color: '#00e5ff' },
-  { name: 'right',     min: -0.20, max: -0.08, target: 4, color: '#7c3aed' },
-  { name: 'far-right', min: -0.50, max: -0.20, target: 4, color: '#a855f7' }
+  { name: 'far-left',  min:  0.25, max:  0.50, target: 4, color: '#a855f7' },
+  { name: 'left',      min:  0.07, max:  0.25, target: 4, color: '#7c3aed' },
+  { name: 'center',    min: -0.07, max:  0.07, target: 6, color: '#00e5ff' },
+  { name: 'right',     min: -0.25, max: -0.07, target: 4, color: '#7c3aed' },
+  { name: 'far-right', min: -0.50, max: -0.25, target: 4, color: '#a855f7' }
 ];
 
 function getYawZone(yaw) {
@@ -2825,33 +2844,32 @@ async function doTriangulate3D() {
   while (Date.now() - startTime < TIMEOUT) {
     var elapsed = Date.now() - startTime;
 
-    // 每幀都跑 MediaPipe detect — 不限間隔
+    // 每幀都跑 MediaPipe detect
     var mp = fl.detect(vid);
     if (!mp.faceLandmarks || !mp.faceLandmarks.length) {
       noFaceFrames++;
-      await sleep(10);
+      await sleep(30);
       continue;
     }
 
     var lm = mp.faceLandmarks[0];
+    // v17: matrix 可選 — landmark-based rotation 不需要 matrix
     var matrix = (mp.facialTransformationMatrixes && mp.facialTransformationMatrixes.length > 0)
       ? mp.facialTransformationMatrixes[0] : null;
-
-    if (!matrix) { await sleep(10); continue; }
 
     // Yaw 計算
     var leX = (lm[33].x + lm[133].x) / 2;
     var reX = (lm[263].x + lm[362].x) / 2;
     var eyeMidX = (leX + reX) / 2;
     var eyeSpan = Math.abs(reX - leX);
-    if (eyeSpan < 0.01) { await sleep(10); continue; }
+    if (eyeSpan < 0.01) { await sleep(30); continue; }
     var yaw = (lm[1].x - eyeMidX) / eyeSpan;
 
-    // EAR 檢查 — 過濾眨眼幀
+    // EAR 僅記錄，不過濾 — 骨骼比率用眼角不受眨眼影響
+    // 過濾會改變正面幀組成 → median 不穩定
     var ear = computeEAR(lm);
-    if (ear < 0.15) { await sleep(10); continue; }
 
-    allFrames.push({ landmarks: lm, matrix: matrix, yaw: yaw });
+    allFrames.push({ landmarks: lm, matrix: matrix, yaw: yaw, ear: ear });
 
     var zone = getYawZone(yaw);
     rawZoneCounts[zone]++;
@@ -2861,7 +2879,7 @@ async function doTriangulate3D() {
 
     // 5 zone 最低要求
     var ZONE_MIN = [8, 8, 15, 8, 8]; // far-L, L, center, R, far-R
-    var ZONE_NAMES = ['Far-Left (80\u00b0)', 'Left (40\u00b0)', 'Center', 'Right (40\u00b0)', 'Far-Right (80\u00b0)'];
+    var ZONE_NAMES = ['Far-Left', 'Left', 'Center', 'Right', 'Far-Right'];
 
     // 找缺少的 zone
     var missingZones = [];
@@ -3219,13 +3237,13 @@ function displayTriangulationResult(result, totalRaw, selection, idData) {
 
     // 2D ID
     html += '<div style="margin-bottom:10px;padding:8px;background:#0c0c14;border:1px solid #00e5ff;border-radius:6px">';
-    html += '<div style="color:#00e5ff;font-size:.75em;font-weight:700">2D Face ID (' + idData.count2D + ' bone ratios, BW=0.25)</div>';
+    html += '<div style="color:#00e5ff;font-size:.75em;font-weight:700">2D Face ID (' + idData.count2D + ' bone ratios, ' + (autoBWEnabled ? 'Adaptive BW' : 'BW=0.25') + ')</div>';
     html += '<div style="color:#0f0;font-size:.85em;word-break:break-all;margin-top:4px;letter-spacing:1px">' + idData.hash2D + '</div>';
     html += '</div>';
 
     // 3D ID
     html += '<div style="margin-bottom:10px;padding:8px;background:#0c0c14;border:1px solid #e11d48;border-radius:6px">';
-    html += '<div style="color:#e11d48;font-size:.75em;font-weight:700">3D Structure ID (' + idData.count3D + ' features, BW=0.25)</div>';
+    html += '<div style="color:#e11d48;font-size:.75em;font-weight:700">3D Structure ID (' + idData.count3D + ' features, ' + (autoBWEnabled ? 'Adaptive BW' : 'BW=0.25') + ')</div>';
     html += '<div style="color:#0f0;font-size:.85em;word-break:break-all;margin-top:4px;letter-spacing:1px">' + idData.hash3D + '</div>';
     html += '</div>';
 
@@ -3779,14 +3797,24 @@ async function doAutoBW() {
     document.getElementById('yaw-indicator').style.display = 'block';
 
     while (performance.now() - scanStart < SCAN_TIMEOUT) {
-      var det = await detectOnce();
-      if (!det) { await sleep(30); continue; }
+      var mp = fl.detect(vid);
+      if (!mp.faceLandmarks || !mp.faceLandmarks.length) { await sleep(30); continue; }
+      var lm = mp.faceLandmarks[0];
+      var matrix = (mp.facialTransformationMatrixes && mp.facialTransformationMatrixes.length > 0)
+        ? mp.facialTransformationMatrixes[0] : null;
+      var leX = (lm[33].x + lm[133].x) / 2;
+      var reX = (lm[263].x + lm[362].x) / 2;
+      var eyeMidX = (leX + reX) / 2;
+      var eyeSpan = Math.abs(reX - leX);
+      if (eyeSpan < 0.01) { await sleep(30); continue; }
+      var yaw = (lm[1].x - eyeMidX) / eyeSpan;
+      var ear = computeEAR(lm);
+      if (ear < 0.12) { await sleep(30); continue; }
 
-      var yaw = det.yaw;
       var zi = yaw > 0.20 ? 0 : yaw > 0.08 ? 1 : yaw > -0.08 ? 2 : yaw > -0.20 ? 3 : 4;
       zoneCounts[zi]++;
 
-      scanFrames.push({ landmarks: det.landmarks, matrix: det.matrix, yaw: yaw });
+      scanFrames.push({ landmarks: lm, matrix: matrix, yaw: yaw });
 
       // Update zone display
       var zoneNames = ['FL','L','C','R','FR'];
@@ -3891,11 +3919,11 @@ async function doAutoBW() {
     mean /= values.length;
     var cv = range / (mean || 0.001);
 
-    // Optimal BW = range × 4 (safety margin), min 0.02, max 0.30
-    var optBW = Math.max(range * 4, 0.02);
+    // Optimal BW = range × 8 (conservative margin), min 0.03, max 0.30
+    // 8x 因為 Auto BW 的 3 輪低估了跨掃描真實變動
+    var optBW = Math.max(range * 8, 0.03);
     optBW = Math.min(optBW, 0.30);
-    // Round to nice value: 0.02, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30
-    var nice = [0.02, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30];
+    var nice = [0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25, 0.30];
     var best = 0.25;
     for (var ni = 0; ni < nice.length; ni++) {
       if (nice[ni] >= optBW) { best = nice[ni]; break; }

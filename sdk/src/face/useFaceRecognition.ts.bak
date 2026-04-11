@@ -32,9 +32,6 @@ import {
   detectSpoof,
   closeCnnModels,
   resetBboxSmoothing,
-  recordFrame,
-  getOcclusionResult,
-  type OcclusionResult,
 } from './cnnInference';
 import {
   saveBoneRatioData,
@@ -130,18 +127,6 @@ interface UseFaceRecognitionReturn {
   cnnReady: boolean;
   /** 防偽分析結果 */
   antiSpoofResult: AntiSpoofResult | null;
-  /** 遮擋偵測結果（口罩/帽子） */
-  occlusion: OcclusionResult;
-  /** 3D 掃描 zone 進度（註冊模式）: { left, center, right } */
-  scanZones: { left: number; center: number; right: number } | null;
-  /** 3D 掃描 zone 目標幀數 */
-  scanZoneTargets: { left: number; center: number; right: number };
-  /** 目前掃描引導階段 */
-  scanPhase: 'center' | 'right' | 'left' | 'complete' | null;
-  /** 剛完成的挑戰（顯示 ✓ 過渡動畫用，持續 ~1 秒後清除） */
-  completedChallenge: LivenessChallenge | null;
-  /** 當前 yaw 值（頭部方向，-0.5=右 ~ 0.5=左） */
-  currentYaw: number;
   /** video element ref */
   videoRef: React.RefObject<HTMLVideoElement | null>;
   /** 啟動相機 + 偵測 */
@@ -173,19 +158,6 @@ export function useFaceRecognition({
   const [isVerified, setIsVerified] = useState(false);
   const [cnnReady, setCnnReady] = useState(false);
   const [antiSpoofResult, setAntiSpoofResult] = useState<AntiSpoofResult | null>(null);
-  const [scanZones, setScanZones] = useState<{ left: number; center: number; right: number } | null>(null);
-  const [currentYaw, setCurrentYaw] = useState<number>(0);
-  const [scanPhase, setScanPhase] = useState<'center' | 'right' | 'left' | 'complete' | null>(null);
-  const [completedChallenge, setCompletedChallenge] = useState<LivenessChallenge | null>(null);
-  const prevChallengeRef = useRef<LivenessChallenge | null>(null);
-  const challengePausedRef = useRef(false);
-
-  // Zone targets（5 zone 合併成 3 組顯示）
-  const scanZoneTargets = {
-    left: YAW_ZONES[0].target + YAW_ZONES[1].target,    // far-left + left
-    center: YAW_ZONES[2].target,                          // center
-    right: YAW_ZONES[3].target + YAW_ZONES[4].target,   // right + far-right
-  };
 
   // Keep statusRef in sync with state
   const setStatusAndRef = useCallback((s: FaceDetectionStatus) => {
@@ -236,35 +208,18 @@ export function useFaceRecognition({
       resetBboxSmoothing();
 
       // 先啟動相機 + MediaPipe（必須），CNN 在背景載入（不阻塞相機啟動）
-      // 嘗試 facingMode: 'user'（前鏡頭），失敗則 fallback 到不指定（E2E/容器環境）
-      let cameraStream: MediaStream | null = null;
-      const mediapipePromise = initFaceLandmarker();
-      try {
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-        });
-      } catch (firstErr) {
-        console.error('[FaceRec] Camera facingMode:user failed, trying fallback:', (firstErr as any)?.name);
-        try {
-          cameraStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 480 } },
-          });
-          console.error('[FaceRec] Camera fallback succeeded (no facingMode constraint)');
-        } catch (secondErr) {
-          console.error('[FaceRec] Camera fallback also failed:', (secondErr as any)?.name, (secondErr as any)?.message);
-          throw secondErr;
-        }
-      }
       const [cameraResult, mediapipeResult] = await Promise.allSettled([
-        Promise.resolve(cameraStream),
-        mediapipePromise,
+        navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        }),
+        initFaceLandmarker(),
       ]);
 
       // 相機是必須的
-      if (cameraResult.status === 'rejected' || !cameraResult.value) {
-        const err = cameraResult.status === 'rejected' ? cameraResult.reason as { name?: string; message?: string } : { name: 'NoStream' };
-        console.error('[FaceRec] Camera unavailable:', err?.name);
-        throw cameraResult.status === 'rejected' ? cameraResult.reason : new Error('No camera stream');
+      if (cameraResult.status === 'rejected') {
+        const err = cameraResult.reason as { name?: string; message?: string } | undefined;
+        console.error('[FaceRec] Camera getUserMedia REJECTED:', err?.name, err?.message);
+        throw cameraResult.reason;
       }
       // MediaPipe 是必須的
       if (mediapipeResult.status === 'rejected') {
@@ -294,7 +249,6 @@ export function useFaceRecognition({
       // 初始化活體偵測器
       if (mode === 'register') {
         activeDetectorRef.current = new ActiveLivenessDetector();
-        activeDetectorRef.current.setOcclusionGetter(getOcclusionResult);
         setCurrentChallenge(activeDetectorRef.current.getCurrentChallenge());
         setChallengeProgress(activeDetectorRef.current.getProgress());
       } else {
@@ -382,9 +336,6 @@ export function useFaceRecognition({
 
       const geometry = extractFaceGeometry(detection.landmarks);
 
-      // 記錄 landmarks + video + blendshapes 用於 anti-spoof + 遮擋偵測
-      recordFrame(detection.landmarks, video, detection.blendshapes);
-
       if (mode === 'register') {
         handleRegisterFrame(video, detection, geometry, now);
       } else {
@@ -471,20 +422,11 @@ export function useFaceRecognition({
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
     maybeSpoofCapture(video, geometry, now);
 
-    // 遮擋偵測：首次偵測到口罩 → 注入移除挑戰到序列最前
-    const occlusion = getOcclusionResult();
-    if (occlusion.hasMask) {
-      detector.injectOcclusionChallenges(occlusion);
-      setCurrentChallenge(detector.getCurrentChallenge());
-      setChallengeProgress(detector.getProgress());
-    }
-
     const challenge = detector.getCurrentChallenge();
 
     // 只在轉頭掃描階段收集 3D 幀（眨眼不收集，挑戰完成後也不再收集）
     if (challenge === 'turn_head' || challenge === 'turn_right' || challenge === 'turn_left') {
       const yaw = detection.yaw ?? 0;
-      setCurrentYaw(yaw);
       const zone = getYawZone(yaw);
       const zoneCount = zoneCountsRef.current[zone];
       const zoneTarget = YAW_ZONES[zone].target;
@@ -498,29 +440,6 @@ export function useFaceRecognition({
         capturedFramesRef.current.push(frame);
         zoneCountsRef.current[zone]++;
         lastCaptureMsRef.current = now;
-      }
-
-      // 每幀都更新 UI zone 進度（即時反映頭部方向，不只在捕獲成功時）
-      const z = zoneCountsRef.current;
-      const merged = {
-        left: z[0] + z[1],
-        center: z[2],
-        right: z[3] + z[4],
-      };
-      setScanZones({ ...merged });
-
-      // 計算掃描引導階段
-      const centerDone = merged.center >= scanZoneTargets.center;
-      const rightDone = merged.right >= scanZoneTargets.right;
-      const leftDone = merged.left >= scanZoneTargets.left;
-      if (!centerDone) {
-        setScanPhase('center');
-      } else if (!rightDone) {
-        setScanPhase('right');
-      } else if (!leftDone) {
-        setScanPhase('left');
-      } else {
-        setScanPhase('complete');
       }
     }
 
@@ -566,36 +485,10 @@ export function useFaceRecognition({
       return;
     }
 
-    // 挑戰切換暫停中（顯示 ✓ 過渡動畫）→ 跳過 processFrame
-    if (challengePausedRef.current) return;
-
     setStatusAndRef('challenge');
-    const prevChallenge = detector.getCurrentChallenge();
     const completed = detector.processFrame(geometry);
-    const nextChallenge = detector.getCurrentChallenge();
 
-    // 偵測挑戰切換（例如 blink → turn_head）或全部完成
-    if (prevChallenge && prevChallenge !== nextChallenge) {
-      const isAllDone = !nextChallenge; // nextChallenge === null → 全部完成
-      console.error(`[FaceRec] Challenge completed: ${prevChallenge}${isAllDone ? ' (ALL DONE)' : ` → next: ${nextChallenge}`}`);
-      // 暫停偵測，顯示 ✓ 過渡動畫
-      challengePausedRef.current = true;
-      setCompletedChallenge(prevChallenge);
-      // 震動回饋（iOS Safari 不支援，靜默失敗）
-      try { navigator.vibrate?.(200); } catch {}
-      setTimeout(() => {
-        challengePausedRef.current = false;
-        setCompletedChallenge(null);
-        if (nextChallenge) {
-          setCurrentChallenge(nextChallenge);
-          setChallengeProgress(detector.getProgress());
-        }
-      }, 1200);
-      // 全部完成時繼續讓下方 completed 邏輯處理
-      if (!isAllDone) return;
-    }
-
-    setCurrentChallenge(nextChallenge);
+    setCurrentChallenge(detector.getCurrentChallenge());
     setChallengeProgress(detector.getProgress());
 
     if (completed) {
@@ -790,12 +683,6 @@ export function useFaceRecognition({
     isVerified,
     cnnReady,
     antiSpoofResult,
-    occlusion: getOcclusionResult(),
-    scanZones,
-    scanZoneTargets,
-    scanPhase,
-    completedChallenge,
-    currentYaw,
     videoRef,
     startCamera,
     stopCamera,

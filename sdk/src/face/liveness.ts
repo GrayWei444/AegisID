@@ -165,7 +165,7 @@ export class ActiveLivenessDetector {
         if (avgEAR < THRESHOLDS.BLINK_EAR) {
           this.wasEyesClosed = true;
         } else if (this.wasEyesClosed && avgEAR >= THRESHOLDS.BLINK_EAR) {
-          devLog('[Liveness] Blink detected');
+          console.error('[Liveness] Blink detected, EAR:', avgEAR.toFixed(3));
           this.completed.set('blink', 'detected');
           this.advanceChallenge();
         }
@@ -191,7 +191,7 @@ export class ActiveLivenessDetector {
         } else if (this.scanPhase === 'turned_left') {
           // 等待回正
           if (Math.abs(noseX) < THRESHOLDS.HEAD_CENTER_OFFSET) {
-            devLog('[Liveness] Scan complete — returned to center');
+            console.error('[Liveness] Scan complete — returned to center');
             this.completed.set(challenge, 'detected');
             this.advanceChallenge();
           }
