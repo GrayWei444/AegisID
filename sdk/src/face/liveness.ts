@@ -56,6 +56,11 @@ export class ActiveLivenessDetector {
   private challengeStartTime = 0;
   private completed: Map<LivenessChallenge, LivenessChallengeStatus> = new Map();
   private wasEyesClosed = false;
+  private _lastEarLog = 0;
+  /** 自適應眨眼偵測：收集基線 EAR，用相對下降偵測 */
+  private earBaseline = 0;
+  private earSamples: number[] = [];
+  private earBaselineReady = false;
   /** 掃描狀態機：idle → turned_right → turned_left → done */
   private scanPhase: 'idle' | 'turned_right' | 'turned_left' = 'idle';
   /** Phase 26b: 挑戰期間 embedding 快照 */
@@ -75,6 +80,10 @@ export class ActiveLivenessDetector {
     this.currentIndex = 0;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
+    this.earBaseline = 0;
+    this.earSamples = [];
+    this.earBaselineReady = false;
+    this._lastEarLog = 0;
     this.scanPhase = 'idle';
     this.snapshots = [];
     this.occlusionInjected = false;
@@ -147,6 +156,14 @@ export class ActiveLivenessDetector {
     const avgEAR = (geometry.leftEAR + geometry.rightEAR) / 2;
     const noseX = geometry.noseOffsetX;
 
+    // 每 2 秒輸出 EAR 診斷（production 可見）
+    if (challenge === 'blink') {
+      if (!this._lastEarLog || Date.now() - this._lastEarLog > 2000) {
+        this._lastEarLog = Date.now();
+        console.error(`[Liveness] EAR: ${avgEAR.toFixed(3)} (L:${geometry.leftEAR.toFixed(3)} R:${geometry.rightEAR.toFixed(3)}) closed:${this.wasEyesClosed} threshold:${THRESHOLDS.BLINK_EAR}`);
+      }
+    }
+
     switch (challenge) {
       case 'remove_mask': {
         // 遮擋挑戰：等待用戶移除口罩
@@ -162,10 +179,29 @@ export class ActiveLivenessDetector {
       }
 
       case 'blink': {
-        if (avgEAR < THRESHOLDS.BLINK_EAR) {
+        // 自適應眨眼偵測：先收集 10 個 EAR 樣本建立基線，再用相對下降偵測
+        // iOS MediaPipe EAR ~0.10-0.13（桌面 ~0.25-0.35），絕對閾值不可靠
+        if (!this.earBaselineReady) {
+          this.earSamples.push(avgEAR);
+          if (this.earSamples.length >= 10) {
+            // 取中位數作為基線（排除極端值）
+            const sorted = [...this.earSamples].sort((a, b) => a - b);
+            this.earBaseline = sorted[Math.floor(sorted.length / 2)];
+            this.earBaselineReady = true;
+            console.error(`[Liveness] Blink baseline: ${this.earBaseline.toFixed(3)} (from ${this.earSamples.length} samples)`);
+          }
+          break;
+        }
+
+        // 眨眼判定：EAR 下降超過基線 40% = 閉眼
+        const closeThreshold = this.earBaseline * 0.6;
+        // 睜眼判定：EAR 回到基線 80% 以上 = 眼睛重新睜開
+        const openThreshold = this.earBaseline * 0.8;
+
+        if (avgEAR < closeThreshold) {
           this.wasEyesClosed = true;
-        } else if (this.wasEyesClosed && avgEAR >= THRESHOLDS.BLINK_EAR) {
-          console.error('[Liveness] Blink detected, EAR:', avgEAR.toFixed(3));
+        } else if (this.wasEyesClosed && avgEAR > openThreshold) {
+          console.error(`[Liveness] Blink detected! EAR: ${avgEAR.toFixed(3)} baseline: ${this.earBaseline.toFixed(3)} close<${closeThreshold.toFixed(3)} open>${openThreshold.toFixed(3)}`);
           this.completed.set('blink', 'detected');
           this.advanceChallenge();
         }
