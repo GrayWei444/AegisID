@@ -269,8 +269,10 @@ function detectOcclusion(
   const skin = video ? checkSkinColorMask(video, landmarks) : { hasMask: false, skinRatio: 1 };
   const blend = checkBlendshapeMask(blendshapes);
 
-  // 任一方法偵測到 = 有口罩
-  const hasMask = skin.hasMask || blend.hasMask;
+  // 兩種方法都偵測到才算口罩（避免嘴巴不動時 blendshapes 誤判）
+  // 膚色低 + blendshapes 抑制 = 確定有口罩
+  // 只有膚色低（可能光線問題）或只有 blendshapes 低（嘴巴沒動）→ 不算
+  const hasMask = skin.hasMask && blend.hasMask;
 
   return { hasMask };
 }
