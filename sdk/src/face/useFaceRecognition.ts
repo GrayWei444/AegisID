@@ -579,6 +579,8 @@ export function useFaceRecognition({
       const isAllDone = !nextChallenge; // nextChallenge === null → 全部完成
       console.error(`[FaceRec] Challenge completed: ${prevChallenge}${isAllDone ? ' (ALL DONE)' : ` → next: ${nextChallenge}`}`);
       // 暫停偵測，顯示 ✓ 過渡動畫
+      // 最後一步（全部完成）停留久一點，讓 VPS 查詢有時間跑
+      const pauseMs = isAllDone ? 2500 : 1200;
       challengePausedRef.current = true;
       setCompletedChallenge(prevChallenge);
       // 震動回饋（iOS Safari 不支援，靜默失敗）
@@ -590,7 +592,7 @@ export function useFaceRecognition({
           setCurrentChallenge(nextChallenge);
           setChallengeProgress(detector.getProgress());
         }
-      }, 1200);
+      }, pauseMs);
       // 全部完成時繼續讓下方 completed 邏輯處理
       if (!isAllDone) return;
     }
