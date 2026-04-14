@@ -226,6 +226,22 @@ v15 目標:
 - `sdk/src/face/useFaceRecognition.ts` — 掃描流程, zone capture
 - `sdk/src/anchor/identityAnchor.ts` — VPS 註冊/查找
 
+### 2.6c 已知 Bug — 待修復 ⚠️
+
+**1. 半臉通過 100% (嚴重度：高)**
+- 用半張臉（遮住一半）仍然通過 bone ratio 匹配 ≥80%
+- 原因推測：被遮住的 landmark 被 MediaPipe 推測填補，骨骼比率仍然成立
+- 影響：安全性漏洞 — 攻擊者可用半張照片通過驗證
+- 修復方向：加入 landmark 可見度/信心度檢查，低信心區域的 landmark 不參與比率計算
+- 相關檔案：`sdk/src/face/structuralId.ts`
+
+**2. 口罩判定不夠準確 (嚴重度：中)**
+- 現有 `checkSkinColorMask()` HSV 膚色分析 + Blendshapes 雙重判定
+- 問題：某些膚色/光線條件下誤判（白皮膚在冷光下 skinRatio 低 → 誤判有口罩）
+- 問題：口罩已摘下但 blendshapes 延遲更新 → challenge 不通過
+- 修復方向：調整 HSV 閾值範圍 + blendshapes 權重，考慮加入嘴巴 landmark 開合度作為第三重判定
+- 相關檔案：`sdk/src/face/cnnInference.ts` (`checkSkinColorMask`, `OcclusionResult`)
+
 ### 2.7 PIN 碼（純密碼）
 
 - PIN 碼 = 純密碼，不做任何行為指紋分析
