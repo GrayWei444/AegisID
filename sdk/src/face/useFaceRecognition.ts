@@ -62,7 +62,9 @@ const LOGIN_MATCH_THRESHOLD = 0.80;
 const MIN_VERIFY_FRAMES = 5;
 
 /** 偵測迴圈間隔 (ms) */
-const DETECTION_INTERVAL = 100;
+// 200ms = 5fps detection. 100ms 在 Android Chrome 會 GPU pipeline backlog 卡死。
+// 5fps 對眨眼/轉頭活體偵測足夠（眨眼動作 100-300ms，轉頭數秒）。
+const DETECTION_INTERVAL = 200;
 
 /** 註冊模式：同 zone 最小擷取間隔 (ms)，避免同角度過多重複幀 */
 const REGISTER_CAPTURE_INTERVAL = 120;
@@ -236,20 +238,23 @@ export function useFaceRecognition({
       resetBboxSmoothing();
 
       // 先啟動相機 + MediaPipe（必須），CNN 在背景載入（不阻塞相機啟動）
-      // 嘗試 facingMode: 'user'（前鏡頭），失敗則 fallback 到不指定（E2E/容器環境）
+      // 不寫死 width/height — 手機前鏡頭 sensor native 多為 portrait (720x1280 等)，
+      // 強制要求 640x480 會讓瀏覽器把畫面壓進 4:3 框，產生 vertically-squashed 畫面，
+      // MediaPipe landmark Y 軸全擠在一起 (EAR ~0.039)。讓瀏覽器給原生比例最穩。
+      // facingMode: 'user' = 前鏡頭。失敗則 fallback 不指定（E2E / 容器環境）
       let cameraStream: MediaStream | null = null;
       const mediapipePromise = initFaceLandmarker();
       try {
         cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          video: { facingMode: 'user' },
         });
       } catch (firstErr) {
         console.error('[FaceRec] Camera facingMode:user failed, trying fallback:', (firstErr as any)?.name);
         try {
           cameraStream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+            video: true,
           });
-          console.error('[FaceRec] Camera fallback succeeded (no facingMode constraint)');
+          console.error('[FaceRec] Camera fallback succeeded (no constraint)');
         } catch (secondErr) {
           console.error('[FaceRec] Camera fallback also failed:', (secondErr as any)?.name, (secondErr as any)?.message);
           throw secondErr;
@@ -289,6 +294,38 @@ export function useFaceRecognition({
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
+        // DIAG: 印出實際拿到的 video 解析度 + track 設定
+        const tracks = stream.getVideoTracks();
+        const trackSettings = tracks[0] ? tracks[0].getSettings() : {};
+        const trackCapabilities = tracks[0] ? tracks[0].getCapabilities() : {};
+        console.error(`[DIAG:CAMERA] video=${videoRef.current.videoWidth}x${videoRef.current.videoHeight} | trackSettings=${JSON.stringify(trackSettings)} | caps.facing=${(trackCapabilities as { facingMode?: string[] }).facingMode?.join?.(',') || 'n/a'}`);
+
+        // DIAG: 等 1 秒讓 video 真的有 frame，從 video 抓一張到 canvas 算統計
+        // 確認鏡頭真的有送 pixel 進來、不是黑屏 / 全白 / 凍結
+        setTimeout(() => {
+          if (!videoRef.current) return;
+          const v = videoRef.current;
+          const c = document.createElement('canvas');
+          c.width = 64; c.height = 64;
+          const ctx = c.getContext('2d');
+          if (!ctx) return;
+          try {
+            ctx.drawImage(v, 0, 0, 64, 64);
+            const data = ctx.getImageData(0, 0, 64, 64).data;
+            let r = 0, g = 0, b = 0, min = 255, max = 0, nonZero = 0;
+            for (let i = 0; i < data.length; i += 4) {
+              r += data[i]; g += data[i+1]; b += data[i+2];
+              const lum = (data[i] + data[i+1] + data[i+2]) / 3;
+              if (lum < min) min = lum;
+              if (lum > max) max = lum;
+              if (lum > 5) nonZero++;
+            }
+            const px = data.length / 4;
+            console.error(`[DIAG:PIXELS] avg R=${(r/px).toFixed(0)} G=${(g/px).toFixed(0)} B=${(b/px).toFixed(0)} | luma min=${min} max=${max} | nonZero=${nonZero}/${px} (${(nonZero/px*100).toFixed(0)}%) | video=${v.videoWidth}x${v.videoHeight} videoTime=${v.currentTime.toFixed(2)}`);
+          } catch (e) {
+            console.error('[DIAG:PIXELS] drawImage threw:', (e as Error).message);
+          }
+        }, 1000);
       }
 
       // 初始化活體偵測器
@@ -378,6 +415,17 @@ export function useFaceRecognition({
       if (!firstFaceLoggedRef.current) {
         firstFaceLoggedRef.current = true;
         devLog(`[FaceRec] First face detected (mode=${mode}, hasMatrix=${!!detection.matrix})`);
+        // DIAG: dump raw landmark structure（看 MediaPipe 實際給什麼欄位）
+        const lm = detection.landmarks;
+        const lm0 = lm[0] as unknown as Record<string, unknown>;
+        const lm1 = lm[1] as unknown as Record<string, unknown>;
+        console.error(`[DIAG:RAW0] keys=${Object.keys(lm0).join(',')} | values=${JSON.stringify(lm0)} | values[1]=${JSON.stringify(lm1)} | total=${lm.length}`);
+        const xs = lm.map(p => p.x);
+        const ys = lm.map(p => p.y);
+        const xRange = Math.max(...xs) - Math.min(...xs);
+        const yRange = Math.max(...ys) - Math.min(...ys);
+        const eyeTopY = lm[159].y, eyeBotY = lm[145].y;
+        console.error(`[DIAG:LANDMARK] xRange=${xRange.toFixed(3)} yRange=${yRange.toFixed(3)} eyeTopY=${eyeTopY.toFixed(3)} eyeBotY=${eyeBotY.toFixed(3)} eyeDiff=${(eyeBotY - eyeTopY).toFixed(4)} | video=${video.videoWidth}x${video.videoHeight}`);
       }
 
       const geometry = extractFaceGeometry(detection.landmarks);

@@ -3,10 +3,19 @@
  *
  * 使用 @mediapipe/tasks-vision 的 FaceLandmarker 偵測 468 個臉部 landmarks
  * 並從中提取幾何測量值（EAR、嘴角距離、鼻子偏移）用於活體偵測
+ *
+ * Delegate 策略（A+B fallback）：
+ *   1. 預設 GPU + outputFacialTransformationMatrixes:false（最快路徑）
+ *   2. 如果 detect 拋例外、或前 N 幀 landmark 全 garbage（visibility=0、x/y 超界）
+ *      → 自動 close GPU instance，重 init 用 CPU
+ *   3. CPU init 完成後 detect 路徑無縫切過去
+ *   4. localStorage 記住該裝置 GPU broken，下次直接走 CPU 不浪費時間
+ *
+ * 所以一般使用者：GPU 速度（~10ms/frame）；GPU 壞的設備：CPU fallback（~30ms/frame）。
  */
 
-import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { devLog } from '../utils/devLog';
+import { FaceLandmarker, FilesetResolver, type FaceLandmarkerOptions } from '@mediapipe/tasks-vision';
+import { devLog, devWarn } from '../utils/devLog';
 import type { FaceLandmark, FaceGeometry, FaceDetectionResult } from './types';
 
 // ============================================================================
@@ -16,45 +25,86 @@ import type { FaceLandmark, FaceGeometry, FaceDetectionResult } from './types';
 let landmarkerInstance: FaceLandmarker | null = null;
 let isInitializing = false;
 let initPromise: Promise<FaceLandmarker> | null = null;
+let visionFileset: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>> | null = null;
+let currentDelegate: 'GPU' | 'CPU' = 'GPU';
+
+// GPU 失敗偵測：consecutive bad frames threshold
+const GPU_BAD_FRAME_THRESHOLD = 5;
+let gpuBadFrameCount = 0;
+let gpuFallbackInProgress = false;
+const GPU_FAIL_CACHE_KEY = 'aegisid_face_gpu_failed';
+
+// 從 localStorage 讀「這台設備之前 GPU 已壞掉」的記憶
+function isGpuKnownBroken(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(GPU_FAIL_CACHE_KEY) === '1';
+  } catch { return false; }
+}
+function markGpuBroken(): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(GPU_FAIL_CACHE_KEY, '1');
+  } catch { /* ignore */ }
+}
+
+// 共用的 createFromOptions 配置（delegate 動態替換）
+function buildOptions(delegate: 'GPU' | 'CPU'): FaceLandmarkerOptions {
+  return {
+    baseOptions: {
+      modelAssetPath:
+        'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+      delegate,
+    },
+    runningMode: 'IMAGE',
+    numFaces: 1,
+    minFaceDetectionConfidence: 0.5,
+    minFacePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+    outputFaceBlendshapes: true,
+    // 關掉 transformation matrix — face_geometry calculator 在部分 Android GPU
+    // 上 design_matrix.norm()=0 → procrustes solver 崩潰整個 graph throw exception。
+    // 下游 yaw/rotation 都用 landmark 自己算（structuralId.ts:15: "Landmark-based
+    // rotation 不依賴 MediaPipe matrix"），matrix 只是 debug 用，可關。
+    // 關掉之後 GPU delegate 在多數設備可正常運作。
+    outputFacialTransformationMatrixes: false,
+  };
+}
 
 /**
  * 初始化 FaceLandmarker（lazy-load，首次使用時載入模型）
  *
- * 使用 CDN 載入 WASM + 模型檔案，大小約 2-3MB
- * Service Worker 會自動快取，後續載入更快
+ * 預設 GPU；若 localStorage 標記過 GPU 壞，直接走 CPU。
+ * Detect 期間若 GPU 證實 broken，會自動重 init 切 CPU。
  */
 export async function initFaceLandmarker(): Promise<FaceLandmarker> {
   if (landmarkerInstance) return landmarkerInstance;
   if (initPromise) return initPromise;
 
   isInitializing = true;
+  currentDelegate = isGpuKnownBroken() ? 'CPU' : 'GPU';
 
   initPromise = (async () => {
     try {
-      devLog('[FaceMesh] Initializing FaceLandmarker...');
+      devLog(`[FaceMesh] Initializing FaceLandmarker (delegate=${currentDelegate})...`);
       const startTime = Date.now();
 
-      const vision = await FilesetResolver.forVisionTasks(
-        'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+      // 釘死 MediaPipe WASM 版本！@latest 會在 patch release 時無聲變動，
+      // 0.10.33+ 某些版本 landmark 座標格式從 normalized [0,1] 改成 pixel coords。
+      // 升級時手動驗證再改。對應本機 node_modules 版本 (^0.10.18)。
+      if (!visionFileset) {
+        visionFileset = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm'
+        );
+      }
+
+      landmarkerInstance = await FaceLandmarker.createFromOptions(
+        visionFileset,
+        buildOptions(currentDelegate)
       );
 
-      landmarkerInstance = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath:
-            'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-          delegate: 'GPU',
-        },
-        runningMode: 'IMAGE',
-        numFaces: 1,
-        minFaceDetectionConfidence: 0.5,
-        minFacePresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-        outputFaceBlendshapes: true,
-        outputFacialTransformationMatrixes: true,
-      });
-
       const elapsed = Date.now() - startTime;
-      devLog(`[FaceMesh] Initialized in ${elapsed}ms`);
+      devLog(`[FaceMesh] Initialized in ${elapsed}ms (delegate=${currentDelegate})`);
+      gpuBadFrameCount = 0;
+      gpuFallbackInProgress = false;
 
       return landmarkerInstance;
     } catch (err) {
@@ -79,22 +129,79 @@ export function isFaceLandmarkerInitializing(): boolean {
   return isInitializing;
 }
 
+/** 目前實際運作的 delegate（給 UI / debug 用）*/
+export function getCurrentDelegate(): 'GPU' | 'CPU' {
+  return currentDelegate;
+}
+
+// ============================================================================
+// GPU → CPU fallback 觸發
+// ============================================================================
+
+async function fallbackToCpu(reason: string): Promise<void> {
+  if (gpuFallbackInProgress) return;
+  if (currentDelegate === 'CPU') return;  // 已是 CPU 不用再 fallback
+  gpuFallbackInProgress = true;
+  devWarn(`[FaceMesh] GPU broken (${reason}), falling back to CPU`);
+  markGpuBroken();
+  try {
+    if (landmarkerInstance) { try { landmarkerInstance.close(); } catch { /* ignore */ } }
+    landmarkerInstance = null;
+    initPromise = null;
+    currentDelegate = 'CPU';
+    if (visionFileset) {
+      landmarkerInstance = await FaceLandmarker.createFromOptions(
+        visionFileset,
+        buildOptions('CPU')
+      );
+      devLog('[FaceMesh] CPU fallback ready');
+    }
+    gpuBadFrameCount = 0;
+  } finally {
+    gpuFallbackInProgress = false;
+  }
+}
+
+/**
+ * 判斷一個 landmark frame 是否為 GPU shader 失敗的 garbage：
+ * - landmark[0].x 不在 normalized [0, 1] 範圍 → 座標系統壞了（pixel coord garbage）
+ * - 多數 visibility 都是 0 → 對 face landmarker 來說正常（face landmark 沒 visibility 概念）
+ *   所以只用座標範圍判斷
+ */
+function isGarbageLandmarks(landmarks: FaceLandmark[]): boolean {
+  if (landmarks.length === 0) return true;
+  const lm0 = landmarks[0];
+  return !(lm0.x >= 0 && lm0.x <= 1 && lm0.y >= 0 && lm0.y <= 1);
+}
+
 // ============================================================================
 // Face Detection
 // ============================================================================
 
 /**
- * 從 video frame 偵測臉部 landmarks + transformation matrix
+ * 從 video frame 偵測臉部 landmarks
  *
- * @returns landmarks + matrix + yaw，或 null（未偵測到人臉）
+ * @returns landmarks + matrix + yaw，或 null（未偵測到人臉 / GPU 失敗 fallback 中）
  */
 export function detectFace(
   video: HTMLVideoElement,
-  timestampMs: number
+  _timestampMs: number
 ): FaceDetectionResult | null {
   if (!landmarkerInstance) return null;
 
-  const result = landmarkerInstance.detect(video);
+  // try/catch — MediaPipe 內部 calculator 偶有 throw（procrustes/SVD/NaN ROI 等）
+  let result;
+  try {
+    result = landmarkerInstance.detect(video);
+  } catch (err) {
+    const msg = (err as Error).message;
+    devLog('[FaceMesh] detect threw:', msg);
+    if (currentDelegate === 'GPU') {
+      // GPU detect throw 是強訊號，立刻 fallback
+      void fallbackToCpu('detect threw: ' + msg.slice(0, 80));
+    }
+    return null;
+  }
 
   if (!result.faceLandmarks || result.faceLandmarks.length === 0) {
     return null;
@@ -102,9 +209,18 @@ export function detectFace(
 
   const landmarks = result.faceLandmarks[0] as FaceLandmark[];
 
-  // 從 transformation matrix 提取資料
-  let matrix: { data: number[] } | undefined;
+  // GPU 健康檢查：座標退化（非 normalized）= shader 跑壞了
+  if (currentDelegate === 'GPU' && isGarbageLandmarks(landmarks)) {
+    gpuBadFrameCount++;
+    if (gpuBadFrameCount >= GPU_BAD_FRAME_THRESHOLD) {
+      void fallbackToCpu(`${gpuBadFrameCount} consecutive garbage frames`);
+    }
+    return null;
+  }
+  if (currentDelegate === 'GPU') gpuBadFrameCount = 0; // reset on good frame
 
+  // 從 transformation matrix 提取資料（目前 buildOptions 已關閉 matrix output，這裡 always undefined）
+  let matrix: { data: number[] } | undefined;
   if (
     result.facialTransformationMatrixes &&
     result.facialTransformationMatrixes.length > 0
