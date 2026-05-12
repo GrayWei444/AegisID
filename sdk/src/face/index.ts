@@ -46,6 +46,9 @@ export { ActiveLivenessDetector, PassiveLivenessDetector } from './liveness';
 export {
   computeStructuralId,
   matchLoginBins,
+  matchLoginLSH,
+  computeAllRatios2d,
+  computeMedianRawRatios,
   buildTrue3DModel,
   buildTrue3DModel as build3DModel,
   compute3DFeatures,
@@ -59,6 +62,43 @@ export {
   STABLE_RATIO_WHITELIST,
   STABLE_3D_FEATURES,
 } from './structuralId';
+
+// Face Structure LSH (v18 — 解決 cross-person / half-face)
+export {
+  computeFaceStructureLsh,
+  matchFaceStructureLsh,
+  buildLshFeatureVector,
+  FACE_STRUCTURE_LSH_CONFIG,
+  FACE_LSH_HAMMING_THRESHOLD,
+  FACE_LSH_HAMMING_REJECT,
+} from './structuralLsh';
+export type { LshMatchResult } from './structuralLsh';
+
+// v20 Occlusion Gate — 41 landmark × (Laplacian + RGB) × 區域投票
+export {
+  sampleLandmarks as gateSampleLandmarks,
+  scoreFrame as gateScoreFrame,
+  framePass as gateFramePass,
+  calibrateBaseline as gateCalibrateBaseline,
+  preflightCheck as gatePreflightCheck,
+  saveBaseline as gateSaveBaseline,
+  loadBaseline as gateLoadBaseline,
+  clearBaseline as gateClearBaseline,
+  hasBaselineCached as gateHasBaselineCached,
+  GATE_LM,
+  GATE_LM_NAMES,
+  GATE_REGIONS,
+  DEFAULT_GATE_CONFIG,
+} from './occlusionGate';
+export type {
+  GateBaseline,
+  GateSample,
+  GateScore,
+  GateConfig,
+  GateRegionStatus,
+  GateFramePassResult,
+  GatePreflightResult,
+} from './occlusionGate';
 
 export type {
   CapturedFrame,

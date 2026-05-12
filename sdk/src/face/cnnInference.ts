@@ -23,12 +23,16 @@ interface FrameSnapshot {
 const frameHistory: FrameSnapshot[] = [];
 const MAX_HISTORY = 30; // 約 3 秒（100ms 間隔）
 
-// 遮擋偵測結果
+// 遮擋偵測結果（v20.2: 三區 HSV 擴展）
 export interface OcclusionResult {
-  hasMask: boolean;   // 口罩（下巴/嘴巴 landmarks 異常）
+  hasMask: boolean;         // 口罩（嘴巴區）
+  hasSunglasses: boolean;   // 墨鏡（眼睛區）
+  hasHat: boolean;          // 帽子（額頭區）
 }
 
-let lastOcclusion: OcclusionResult = { hasMask: false };
+let lastOcclusion: OcclusionResult = { hasMask: false, hasSunglasses: false, hasHat: false };
+// v20.4 debounce counters — 連 N 幀一致才翻轉 lastOcclusion
+const occHitCount = { mask: 0, sg: 0, hat: 0 };
 
 // ============================================================================
 // Key Landmark Indices (MediaPipe 478 face mesh)
@@ -208,6 +212,130 @@ function checkSkinColorMask(
   return { hasMask, skinRatio };
 }
 
+// ============================================================================
+// v20.2: 眼睛區 HSV — 偵測墨鏡
+// ============================================================================
+let _eyesCanvas: OffscreenCanvas | null = null;
+let _eyesCtx: OffscreenCanvasRenderingContext2D | null = null;
+
+function checkSkinColorSunglasses(
+  video: HTMLVideoElement,
+  landmarks: FaceLandmark[],
+): { hasSunglasses: boolean; skinRatio: number } {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (vw === 0 || vh === 0) return { hasSunglasses: false, skinRatio: 1 };
+
+  // 兩眼整體 bbox（含眉毛、外角，足以包覆典型墨鏡框）
+  const eyeIndices = [33, 133, 263, 362, 159, 145, 386, 374, 70, 105, 300, 334];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const i of eyeIndices) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    const px = lm.x * vw;
+    const py = lm.y * vh;
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+  // 眼周往上下擴一點（墨鏡框可能高過眉毛）
+  const padX = (maxX - minX) * 0.1;
+  const padY = (maxY - minY) * 0.5;
+  minX = Math.max(0, minX - padX);
+  maxX = Math.min(vw, maxX + padX);
+  minY = Math.max(0, minY - padY);
+  maxY = Math.min(vh, maxY + padY);
+
+  const w = Math.round(maxX - minX);
+  const h = Math.round(maxY - minY);
+  if (w < 8 || h < 8) return { hasSunglasses: false, skinRatio: 1 };
+
+  if (!_eyesCanvas || _eyesCanvas.width !== w || _eyesCanvas.height !== h) {
+    _eyesCanvas = new OffscreenCanvas(w, h);
+    _eyesCtx = _eyesCanvas.getContext('2d', { willReadFrequently: true });
+  }
+  if (!_eyesCtx) return { hasSunglasses: false, skinRatio: 1 };
+  _eyesCtx.drawImage(video, minX, minY, w, h, 0, 0, w, h);
+  const data = _eyesCtx.getImageData(0, 0, w, h).data;
+
+  let skinCount = 0, totalCount = 0;
+  for (let i = 0; i < data.length; i += 8) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    totalCount++;
+    if (r > 80 && g > 40 && b > 20 && r > g && r > b && (r - g) > 15 && Math.abs(g - b) < 80) skinCount++;
+    else if (r > 150 && g > 100 && b > 60 && r > g && (r - b) > 30) skinCount++;
+  }
+  const skinRatio = totalCount > 0 ? skinCount / totalCount : 1;
+  // 眼周正常：~50% 膚色（中央有虹膜/鞏膜）；墨鏡：黑/深色佔多 → < 0.30
+  const hasSunglasses = skinRatio < 0.30;
+  return { hasSunglasses, skinRatio };
+}
+
+// ============================================================================
+// v20.2: 額頭區 HSV — 偵測帽子（壓低到眉毛附近）
+// ============================================================================
+let _foreCanvas: OffscreenCanvas | null = null;
+let _foreCtx: OffscreenCanvasRenderingContext2D | null = null;
+
+function checkSkinColorHat(
+  video: HTMLVideoElement,
+  landmarks: FaceLandmark[],
+): { hasHat: boolean; skinRatio: number } {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (vw === 0 || vh === 0) return { hasHat: false, skinRatio: 1 };
+
+  // 額頭區 bbox（lm 10 = 額頭頂、67/297 太陽穴、109/338 額側、70/300 眉內側）
+  // 取 X 從 67 到 297（額頭橫向），Y 從 10 到眉毛上方
+  const indices = [10, 67, 297, 109, 338];
+  const browIndices = [70, 105, 300, 334];
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const i of indices) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    const px = lm.x * vw, py = lm.y * vh;
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+  // Y 下界用眉毛上方
+  let browTop = -Infinity;
+  for (const i of browIndices) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    const py = lm.y * vh;
+    if (py > browTop) browTop = py;
+  }
+  if (browTop > 0) maxY = Math.min(maxY, browTop);
+
+  const w = Math.round(maxX - minX);
+  const h = Math.round(maxY - minY);
+  if (w < 8 || h < 8) return { hasHat: false, skinRatio: 1 };
+
+  if (!_foreCanvas || _foreCanvas.width !== w || _foreCanvas.height !== h) {
+    _foreCanvas = new OffscreenCanvas(w, h);
+    _foreCtx = _foreCanvas.getContext('2d', { willReadFrequently: true });
+  }
+  if (!_foreCtx) return { hasHat: false, skinRatio: 1 };
+  _foreCtx.drawImage(video, minX, minY, w, h, 0, 0, w, h);
+  const data = _foreCtx.getImageData(0, 0, w, h).data;
+
+  let skinCount = 0, totalCount = 0;
+  for (let i = 0; i < data.length; i += 8) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    totalCount++;
+    if (r > 80 && g > 40 && b > 20 && r > g && r > b && (r - g) > 15 && Math.abs(g - b) < 80) skinCount++;
+    else if (r > 150 && g > 100 && b > 60 && r > g && (r - b) > 30) skinCount++;
+  }
+  const skinRatio = totalCount > 0 ? skinCount / totalCount : 1;
+  // v20.4 額頭乾淨即使有瀏海/陰影通常 skinRatio ~0.35-0.7，帽簷壓眉布料/黑色會 <0.20
+  // 從 0.50 改 0.25（更寬鬆）— 配合下方 debounce 避免閃爍
+  const hasHat = skinRatio < 0.25;
+  return { hasHat, skinRatio };
+}
+
 /**
  * 方法 2：Blendshapes 分析
  * 口罩會讓嘴巴相關 blendshapes 異常（值接近 0 或異常穩定）
@@ -258,23 +386,41 @@ function checkBlendshapeMask(
 }
 
 /**
- * 綜合口罩偵測
- * 膚色分析 + blendshapes，任一方法偵測到 = 有口罩
+ * v20.2 綜合遮擋偵測：HSV 三區（嘴 + 眼 + 額）
+ *
+ * 三區獨立判定，always-on 不需 baseline：
+ *   - hasMask: 嘴巴區膚色低 + Blendshape 嘴部活動度低（雙重判定）
+ *   - hasSunglasses: 眼睛區膚色低
+ *   - hasHat: 額頭區膚色低
+ *
+ * 與 occlusionGate.ts 並用：gate 沒 baseline 時，這層先擋住主要遮擋。
+ * AegisTalk UI 可分別讀 occlusion.hasMask/hasSunglasses/hasHat 顯示針對性提示。
  */
 function detectOcclusion(
   landmarks: FaceLandmark[],
   video: HTMLVideoElement | null,
   blendshapes: Record<string, number> | undefined,
 ): OcclusionResult {
-  const skin = video ? checkSkinColorMask(video, landmarks) : { hasMask: false, skinRatio: 1 };
+  if (!video) {
+    return { hasMask: false, hasSunglasses: false, hasHat: false };
+  }
+
+  // 嘴巴：HSV + Blendshape 雙重判定
+  const skinMouth = checkSkinColorMask(video, landmarks);
   const blend = checkBlendshapeMask(blendshapes);
+  const hasMask = skinMouth.hasMask && blend.hasMask;
 
-  // 兩種方法都偵測到才算口罩（避免嘴巴不動時 blendshapes 誤判）
-  // 膚色低 + blendshapes 抑制 = 確定有口罩
-  // 只有膚色低（可能光線問題）或只有 blendshapes 低（嘴巴沒動）→ 不算
-  const hasMask = skin.hasMask && blend.hasMask;
+  // 眼睛：純 HSV
+  const eyes = checkSkinColorSunglasses(video, landmarks);
 
-  return { hasMask };
+  // 額頭：純 HSV
+  const fore = checkSkinColorHat(video, landmarks);
+
+  return {
+    hasMask,
+    hasSunglasses: eyes.hasSunglasses,
+    hasHat: fore.hasHat,
+  };
 }
 
 // ============================================================================
@@ -303,19 +449,32 @@ export function recordFrame(
   if (video) lastVideoRef = video;
   if (blendshapes) lastBlendshapes = blendshapes;
 
-  // 更新遮擋偵測
-  lastOcclusion = detectOcclusion(landmarks, lastVideoRef, lastBlendshapes);
+  // v20.4 更新遮擋偵測 + debounce（避免單幀閃爍卡住 UI）
+  const fresh = detectOcclusion(landmarks, lastVideoRef, lastBlendshapes);
+  // 計票：連續 N 幀同方向才翻轉
+  const D = 3;  // 需要 3 幀一致才改變狀態
+  if (fresh.hasMask)        occHitCount.mask = Math.min(D, occHitCount.mask + 1); else occHitCount.mask = Math.max(0, occHitCount.mask - 1);
+  if (fresh.hasSunglasses)  occHitCount.sg   = Math.min(D, occHitCount.sg + 1);   else occHitCount.sg   = Math.max(0, occHitCount.sg - 1);
+  if (fresh.hasHat)         occHitCount.hat  = Math.min(D, occHitCount.hat + 1);  else occHitCount.hat  = Math.max(0, occHitCount.hat - 1);
+  lastOcclusion = {
+    hasMask:       occHitCount.mask >= D,
+    hasSunglasses: occHitCount.sg   >= D,
+    hasHat:        occHitCount.hat  >= D,
+  };
 
   // 每 3 秒輸出一次診斷
   const now = performance.now();
   if (now - lastOcclusionLogMs > 3000) {
     lastOcclusionLogMs = now;
     const skin = lastVideoRef ? checkSkinColorMask(lastVideoRef, landmarks) : { skinRatio: -1 };
+    const sg = lastVideoRef ? checkSkinColorSunglasses(lastVideoRef, landmarks) : { skinRatio: -1 };
+    const hat = lastVideoRef ? checkSkinColorHat(lastVideoRef, landmarks) : { skinRatio: -1 };
     const blend = checkBlendshapeMask(lastBlendshapes);
     console.error(
-      `[DIAG:OCCLUSION] mask=${lastOcclusion.hasMask}` +
-      ` skinRatio=${skin.skinRatio.toFixed(3)}` +
-      ` mouthBlend=${blend.mouthScore.toFixed(4)}`
+      `[DIAG:OCCLUSION] M=${lastOcclusion.hasMask}(skin=${skin.skinRatio.toFixed(2)} mouthBS=${blend.mouthScore.toFixed(3)})` +
+      ` SG=${lastOcclusion.hasSunglasses}(skin=${sg.skinRatio.toFixed(2)})` +
+      ` HAT=${lastOcclusion.hasHat}(skin=${hat.skinRatio.toFixed(2)})` +
+      ` votes={M:${occHitCount.mask}/${D},SG:${occHitCount.sg}/${D},HAT:${occHitCount.hat}/${D}}`
     );
   }
 }
@@ -341,7 +500,8 @@ export const isCnnFailed = isAntiSpoofFailed;
 
 export function resetBboxSmoothing(): void {
   frameHistory.length = 0;
-  lastOcclusion = { hasMask: false };
+  lastOcclusion = { hasMask: false, hasSunglasses: false, hasHat: false };
+  occHitCount.mask = 0; occHitCount.sg = 0; occHitCount.hat = 0;
 }
 
 /**

@@ -62,7 +62,9 @@ export class ActiveLivenessDetector {
   private earSamples: number[] = [];
   private earBaselineReady = false;
   /** 掃描狀態機：idle → turned_right → turned_left → done */
-  private scanPhase: 'idle' | 'turned_right' | 'turned_left' = 'idle';
+  // v20.3: +字掃描 — yaw 軸先（左/右隨便順序）→ pitch 軸（上/下隨便順序）
+  private scanPhase: 'yaw' | 'pitch' | 'final_center' = 'yaw';
+  private scanHits = { right: false, left: false, up: false, down: false };
   /** Phase 26b: 挑戰期間 embedding 快照 */
   private snapshots: ChallengeEmbeddingSnapshot[] = [];
   /** 遮擋挑戰是否已注入（防止重複注入） */
@@ -84,7 +86,8 @@ export class ActiveLivenessDetector {
     this.earSamples = [];
     this.earBaselineReady = false;
     this._lastEarLog = 0;
-    this.scanPhase = 'idle';
+    this.scanPhase = 'yaw';
+    this.scanHits = { right: false, left: false, up: false, down: false };
     this.snapshots = [];
     this.occlusionInjected = false;
     this.completed = new Map([
@@ -136,6 +139,17 @@ export class ActiveLivenessDetector {
   /** 取得已完成的挑戰數 */
   getProgress(): { current: number; total: number } {
     return { current: this.currentIndex, total: this.challenges.length };
+  }
+
+  /** v20.3 取得 +字掃描的四向命中狀態（給 UI 進度顯示用） */
+  getScanHits(): { right: boolean; left: boolean; up: boolean; down: boolean; phase: 'yaw' | 'pitch' | 'final_center' } {
+    return {
+      right: this.scanHits.right,
+      left: this.scanHits.left,
+      up: this.scanHits.up,
+      down: this.scanHits.down,
+      phase: this.scanPhase,
+    };
   }
 
   /**
@@ -211,23 +225,33 @@ export class ActiveLivenessDetector {
       case 'turn_head':
       case 'turn_right':
       case 'turn_left': {
-        // 一次慢速掃描：右轉 → 左轉 → 回正（一氣呵成）
-        if (this.scanPhase === 'idle') {
-          // 等待右轉到位
-          if (noseX > THRESHOLDS.HEAD_TURN_OFFSET) {
-            this.scanPhase = 'turned_right';
-            devLog('[Liveness] Scan: right reached, noseX:', noseX.toFixed(3));
+        // v20.3 +字掃描（順序自由）
+        //   Phase 'yaw'   : 左右兩極都達到（任意順序）→ 進 pitch
+        //   Phase 'pitch' : 上下兩極都達到（任意順序）→ 進 final_center
+        //   Phase 'final_center' : 回正 → 完成
+        const noseY = geometry.noseOffsetY;
+
+        // 記下達到的極端（accumulative）
+        // v20.8: revert v20.7 swap — faceMesh.ts noseOffsetX 註解「正 = 向右轉」是 authoritative
+        if (noseX >  THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.right = true;
+        if (noseX < -THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.left = true;
+
+        if (this.scanPhase === 'yaw') {
+          if (this.scanHits.right && this.scanHits.left) {
+            this.scanPhase = 'pitch';
+            devLog('[Liveness] +字 Scan: yaw done (L+R hit), → pitch');
           }
-        } else if (this.scanPhase === 'turned_right') {
-          // 等待左轉到位（從右直接轉到左，不需要先回正）
-          if (noseX < -THRESHOLDS.HEAD_TURN_OFFSET) {
-            this.scanPhase = 'turned_left';
-            devLog('[Liveness] Scan: left reached, noseX:', noseX.toFixed(3));
+        } else if (this.scanPhase === 'pitch') {
+          if (noseY < -THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.up = true;
+          if (noseY >  THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.down = true;
+          if (this.scanHits.up && this.scanHits.down) {
+            this.scanPhase = 'final_center';
+            devLog('[Liveness] +字 Scan: pitch done (U+D hit), → final center');
           }
-        } else if (this.scanPhase === 'turned_left') {
-          // 等待回正
-          if (Math.abs(noseX) < THRESHOLDS.HEAD_CENTER_OFFSET) {
-            console.error('[Liveness] Scan complete — returned to center');
+        } else if (this.scanPhase === 'final_center') {
+          if (Math.abs(noseX) < THRESHOLDS.HEAD_CENTER_OFFSET
+              && Math.abs(noseY) < THRESHOLDS.HEAD_CENTER_OFFSET) {
+            console.error('[Liveness] +字 Scan complete — yaw+pitch hit, centered');
             this.completed.set(challenge, 'detected');
             this.advanceChallenge();
           }
@@ -244,7 +268,8 @@ export class ActiveLivenessDetector {
     this.currentIndex++;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
-    this.scanPhase = 'idle';
+    this.scanPhase = 'yaw';
+    this.scanHits = { right: false, left: false, up: false, down: false };
   }
 
   // =========================================================================
@@ -268,7 +293,8 @@ export class ActiveLivenessDetector {
     const status = this.completed.get(challenge);
     if (status === 'waiting') {
       // 挑戰尚未偵測到動作
-      return this.wasEyesClosed || this.scanPhase !== 'idle' ? 'during' : 'before';
+      const scanStarted = this.scanHits.right || this.scanHits.left || this.scanHits.up || this.scanHits.down;
+      return this.wasEyesClosed || scanStarted ? 'during' : 'before';
     }
     return 'after';
   }

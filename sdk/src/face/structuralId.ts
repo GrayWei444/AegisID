@@ -74,6 +74,10 @@ export interface FaceStructureIdResult {
   readonly model3D: readonly Landmark3D[] | null;
   readonly stableCount2D: number;
   readonly stableCount3D: number;
+  /** Login 用 — 25 維 LSH hash (binary string, 128 bits) */
+  readonly lshHash: string;
+  /** Login 用 — 25 個 ratio 的 raw median（除錯/重算）*/
+  readonly frontalRaw: Readonly<Record<string, number>>;
 }
 
 export interface LoginMatchResult {
@@ -289,8 +293,39 @@ function computeAllRatiosV17(
   return r;
 }
 
-function computeAllRatios2d(lm: readonly Landmark3D[]): Record<string, number> | null {
+/**
+ * 對外暴露：v17 全部 ratio 的 raw 連續值（含非 whitelist 的 M/J 等）
+ * 用於 LSH 模組直接讀 raw 值，避免 quantize 損失資訊
+ */
+export function computeAllRatios2d(lm: readonly Landmark3D[]): Record<string, number> | null {
   return computeAllRatiosV17(lm, dist2d, midpoint2d);
+}
+
+/**
+ * 多幀 raw ratio median — 給 LSH / login fuzzy match 用
+ *
+ * 與 computeMedianBins 不同：這個回傳「連續值的 median」，
+ * 沒有 quantize，保留 LSH 需要的精度。
+ */
+export function computeMedianRawRatios(
+  multiFrameLandmarks: readonly (readonly Landmark3D[])[],
+): Record<string, number> {
+  const ratioSets = multiFrameLandmarks
+    .map((lm) => computeAllRatios2d(lm))
+    .filter((r): r is Record<string, number> => r !== null);
+
+  if (ratioSets.length === 0) return {};
+
+  const out: Record<string, number> = {};
+  for (const id of STABLE_RATIO_WHITELIST) {
+    const vals = ratioSets.map((s) => s[id]).filter((v): v is number => Number.isFinite(v));
+    if (vals.length >= 2) {
+      out[id] = median(vals);
+    } else if (vals.length === 1) {
+      out[id] = vals[0];
+    }
+  }
+  return out;
 }
 
 // ============================================================
@@ -440,57 +475,21 @@ function triangulateMultiRay(rays: readonly { origin: number[]; dir: number[] }[
 }
 
 /**
- * 真實 3D 重建 — landmark-based rotation + 多幀三角測量
+ * v20 真實 3D 重建 — PnP（perspective camera + canonical face model）
+ *
+ * 取代 v17 的 landmark-rotation orthographic 重建。新版用 Gauss-Newton 解每幀位姿
+ * 對 MediaPipe canonical face 對位，再多射線三角測量。
+ *
+ * 為什麼 v20 比 v17 好：
+ *   - v17 假設 orthographic camera（不考慮透視），大 yaw 時 IPD 會被透視壓縮 → 推算錯
+ *   - v20 用真實 perspective pinhole camera，每幀 R/T 從 PnP 解
+ *   - PnP 收斂失敗的幀（finalErr ≥ 0.05）自動丟棄，避免被壞 frame 污染
+ *
+ * @see sdk/src/face/build3DPnP.ts 完整實作
  */
-export function buildTrue3DModel(frames: readonly CapturedFrame[]): readonly Landmark3D[] | null {
-  const valid = frames.filter((f) => f.landmarks && f.landmarks.length >= 468);
-  if (valid.length < 5) return null;
-
-  const refWidths = findReferenceWidths(valid);
-  const numLm = valid[0].landmarks.length;
-  const fx = 0.9, fy = 0.9, cx = 0.5, cy = 0.5;
-  const camDist = 5.0;
-
-  const frameData = valid.map((f) => {
-    const rot = estimateRotation(f.landmarks, refWidths);
-    return { lm: f.landmarks, R: buildRotationMatrixFromAngles(rot.yaw, rot.pitch, rot.roll) };
-  });
-
-  const model: Landmark3D[] = [];
-
-  for (let li = 0; li < numLm; li++) {
-    const rays: { origin: number[]; dir: number[] }[] = [];
-
-    for (const fd of frameData) {
-      const lm = fd.lm[li];
-      const rayDir = pixelToRay(lm.x, lm.y, fx, fy, cx, cy);
-      const Ri = transposeR(fd.R);
-      let faceRayDir = matVec3(Ri, rayDir);
-      const frl = vecLen(faceRayDir);
-      faceRayDir = vecScale(faceRayDir, 1.0 / frl);
-      const camFacePos = matVec3(Ri, [0, 0, -camDist]);
-      rays.push({ origin: camFacePos, dir: faceRayDir });
-    }
-
-    const pt = triangulateMultiRay(rays);
-    if (pt) {
-      model.push({ x: pt[0], y: pt[1], z: pt[2] });
-    } else {
-      const flm = valid[0].landmarks[li];
-      model.push({ x: flm.x - 0.5, y: flm.y - 0.5, z: 0 });
-    }
-  }
-
-  // IPD 3D 歸一化
-  const ipd3d = dist3d(model[33], model[263]);
-  if (ipd3d < 0.001) return null;
-
-  const scale = 1.0 / ipd3d;
-  return model.map((p) => ({ x: p.x * scale, y: p.y * scale, z: p.z * scale }));
-}
-
-// Keep legacy build3DModel for backward compatibility
-export { buildTrue3DModel as build3DModel };
+import { buildPnPModel as _buildPnPModel } from './build3DPnP';
+export const buildTrue3DModel = _buildPnPModel;
+export const build3DModel = _buildPnPModel;
 
 // ============================================================
 // 3D Feature Computation — 32 features, 6 categories
@@ -664,7 +663,13 @@ export async function computeStructuralId(
     throw new Error('Not enough frontal frames for 2D ID');
   }
 
-  const frontalBins = computeMedianBins(frontalFrames.map((f) => f.landmarks));
+  const frontalLandmarks = frontalFrames.map((f) => f.landmarks);
+  const frontalBins = computeMedianBins(frontalLandmarks);
+  const frontalRaw = computeMedianRawRatios(frontalLandmarks);
+
+  // Lazy import 避免循環依賴
+  const { computeFaceStructureLsh } = await import('./structuralLsh');
+  const lshHash = computeFaceStructureLsh(frontalRaw);
 
   // Step 2: 2D hash
   const hash2DParts: string[] = [];
@@ -706,11 +711,53 @@ export async function computeStructuralId(
     model3D,
     stableCount2D: hash2DParts.length,
     stableCount3D: bins3D.size,
+    lshHash,
+    frontalRaw,
   };
 }
 
 export async function computeAccountKey(faceHash: string, pin: string): Promise<string> {
   return sha256hex(`${faceHash}:${pin}`);
+}
+
+/**
+ * v18 LSH 登入比對 — 取代 matchLoginBins 的 exact-equality 模式
+ *
+ * 解決：
+ *   - 「別人也能登進去」: 用 LSH 量連續特徵向量的角度，不再 exact bin match
+ *   - 「半臉也能登進去」: 半臉時 MediaPipe 幻覺值偏向 population mean，
+ *                       去 mean 後變接近 0，與真臉的 z-score 方向偏離 → 高漢明距離
+ *
+ * 流程：
+ *   loginFrames → median raw ratios → de-mean+scale → LSH 128-bit
+ *   → Hamming(stored, login) → 通過 / 不確定 / 拒絕
+ */
+export async function matchLoginLSH(
+  loginFrames: readonly (readonly Landmark3D[])[],
+  storedLshHash: string,
+): Promise<{
+  hammingDistance: number;
+  similarity: number;
+  passed: boolean;
+  uncertain: boolean;
+  loginRaw: Record<string, number>;
+}> {
+  if (!storedLshHash || storedLshHash.length === 0) {
+    throw new Error('matchLoginLSH: storedLshHash is empty (user may need to re-register)');
+  }
+
+  const loginRaw = computeMedianRawRatios(loginFrames);
+  const { computeFaceStructureLsh, matchFaceStructureLsh } = await import('./structuralLsh');
+  const loginHash = computeFaceStructureLsh(loginRaw);
+  const result = matchFaceStructureLsh(storedLshHash, loginHash);
+
+  return {
+    hammingDistance: result.hammingDistance,
+    similarity: result.similarity,
+    passed: result.passed,
+    uncertain: result.uncertain,
+    loginRaw,
+  };
 }
 
 export function matchLoginBins(

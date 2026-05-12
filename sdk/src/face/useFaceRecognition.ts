@@ -23,7 +23,7 @@ import {
 } from './liveness';
 import {
   computeStructuralId,
-  matchLoginBins,
+  matchLoginLSH,
 } from './structuralId';
 import type { CapturedFrame, Landmark3D } from './structuralId';
 import {
@@ -40,6 +40,13 @@ import {
   saveBoneRatioData,
   getBoneRatioData,
 } from './storage';
+import {
+  framePass as gateFramePass,
+  calibrateBaseline as gateCalibrateBaseline,
+  loadBaseline as gateLoadBaseline,
+  saveBaseline as gateSaveBaseline,
+  type GateBaseline,
+} from './occlusionGate';
 import type {
   FaceDetectionStatus,
   FaceDetectionResult,
@@ -81,12 +88,30 @@ const YAW_ZONES = [
   { min: -0.50, max: -0.20, target: 4 }, // far-right
 ] as const;
 
+// v20.7: pitch zones — 上下也收幀（增加 3D triangulation 多樣性）
+const PITCH_ZONES = [
+  { min: 0.18, max: 0.50, target: 4 },   // far-up
+  { min: 0.08, max: 0.18, target: 3 },   // up
+  { min: -0.08, max: 0.08, target: 0 },  // center pitch (yaw 已收，不重複)
+  { min: -0.18, max: -0.08, target: 3 }, // down
+  { min: -0.50, max: -0.18, target: 4 }, // far-down
+] as const;
+
 function getYawZone(yaw: number): number {
   for (let i = 0; i < YAW_ZONES.length; i++) {
     if (yaw >= YAW_ZONES[i].min && yaw < YAW_ZONES[i].max) return i;
   }
   if (yaw >= 0.50) return 0;
   if (yaw < -0.50) return 4;
+  return 2;
+}
+
+function getPitchZone(pitch: number): number {
+  for (let i = 0; i < PITCH_ZONES.length; i++) {
+    if (pitch >= PITCH_ZONES[i].min && pitch < PITCH_ZONES[i].max) return i;
+  }
+  if (pitch >= 0.50) return 0;
+  if (pitch < -0.50) return 4;
   return 2;
 }
 
@@ -136,6 +161,8 @@ interface UseFaceRecognitionReturn {
   occlusion: OcclusionResult;
   /** 3D 掃描 zone 進度（註冊模式）: { left, center, right } */
   scanZones: { left: number; center: number; right: number } | null;
+  /** v20.3 +字掃描四向命中狀態（給進度 UI）*/
+  scanHits: { right: boolean; left: boolean; up: boolean; down: boolean; phase: 'yaw' | 'pitch' | 'final_center' } | null;
   /** 3D 掃描 zone 目標幀數 */
   scanZoneTargets: { left: number; center: number; right: number };
   /** 目前掃描引導階段 */
@@ -146,6 +173,12 @@ interface UseFaceRecognitionReturn {
   currentYaw: number;
   /** video element ref */
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  /** v20 Gate baseline 是否已校準（從 localStorage 載入或剛 calibrateGate）*/
+  gateBaselineReady: boolean;
+  /** v20 Gate 當前幀遮擋狀態（null = OK；{region} = 該區域遮擋）*/
+  gateOcclusion: { region: string | null } | null;
+  /** v20 Gate 校準 — 採 ~2s 乾淨臉建 baseline，存 localStorage 持久化 */
+  calibrateGate: (durationMs?: number) => Promise<boolean>;
   /** 啟動相機 + 偵測 */
   startCamera: () => Promise<void>;
   /** 停止相機 */
@@ -176,6 +209,7 @@ export function useFaceRecognition({
   const [cnnReady, setCnnReady] = useState(false);
   const [antiSpoofResult, setAntiSpoofResult] = useState<AntiSpoofResult | null>(null);
   const [scanZones, setScanZones] = useState<{ left: number; center: number; right: number } | null>(null);
+  const [scanHits, setScanHits] = useState<{ right: boolean; left: boolean; up: boolean; down: boolean; phase: 'yaw' | 'pitch' | 'final_center' } | null>(null);
   const [currentYaw, setCurrentYaw] = useState<number>(0);
   const [scanPhase, setScanPhase] = useState<'center' | 'right' | 'left' | 'complete' | null>(null);
   const [completedChallenge, setCompletedChallenge] = useState<LivenessChallenge | null>(null);
@@ -210,6 +244,8 @@ export function useFaceRecognition({
   const boneRatioResultRef = useRef<BoneRatioPlainData | null>(null);
   // Yaw zone 計數（註冊模式，確保左/中/右均勻分佈）
   const zoneCountsRef = useRef<number[]>([0, 0, 0, 0, 0]);
+  // v20.7: pitch zone 計數（搭配 PITCH_ZONES）
+  const pitchZoneCountsRef = useRef<number[]>([0, 0, 0, 0, 0]);
   const lastCaptureMsRef = useRef(0);
 
   // Anti-spoof 相關 refs
@@ -219,12 +255,30 @@ export function useFaceRecognition({
 
   // Verify mode: 被動活體已通過但尚未完成
   const livenessPassedRef = useRef(false);
+  // v20.6: 遮擋判斷只在挑戰前 check 一次。一旦過 → 整個挑戰流程不再 gate
+  const occlusionConfirmedRef = useRef(false);
 
   // Diagnostic counters
   const faceDetectedCountRef = useRef(0);
   const noFaceCountRef = useRef(0);
   const lastDiagnosticLogRef = useRef(0);
   const firstFaceLoggedRef = useRef(false);
+
+  // v20 Occlusion Gate state
+  const gateBaselineRef = useRef<GateBaseline | null>(null);
+  const [gateBaselineReady, setGateBaselineReady] = useState(false);
+  const [gateOcclusion, setGateOcclusion] = useState<{ region: string | null } | null>(null);
+  const gateRejectedFramesRef = useRef(0);
+
+  // Load baseline on mount (cached from previous calibration)
+  useEffect(() => {
+    gateLoadBaseline().then((b) => {
+      gateBaselineRef.current = b;
+      setGateBaselineReady(b !== null);
+      if (b) devLog('[FaceRec/Gate] Baseline loaded (n=', b.n, ', ts=', new Date(b.ts).toISOString(), ')');
+      else devLog('[FaceRec/Gate] No baseline — calibrateGate() must be called before register/verify');
+    });
+  }, []);
 
   // =========================================================================
   // Camera Management
@@ -343,6 +397,40 @@ export function useFaceRecognition({
       startDetectionLoop();
 
       devLog('[FaceRec] Camera started, mode:', mode);
+
+      // v20.1: 自動校準 gate baseline — 但**必須先確認沒口罩**才能採樣
+      // 否則 baseline 記成「戴口罩的你」→ gate 永遠抓不到口罩遮擋
+      // isCleanFn 用 HSV+Blendshape 結果，最多等 30 秒讓用戶移除口罩
+      // 提示：帽子/墨鏡 HSV 抓不到，UI 必須額外文字提醒「請保持臉部完全露出」
+      if (!gateBaselineRef.current) {
+        setTimeout(async () => {
+          if (gateBaselineRef.current) return;
+          if (!videoRef.current || !isRunningRef.current) return;
+          devLog('[FaceRec/Gate] Auto-calibrating (等待 HSV 判定無口罩/墨鏡/帽子)...');
+          const baseline = await gateCalibrateBaseline(
+            videoRef.current,
+            (v, ts) => {
+              const r = detectFace(v, ts);
+              return r ? { faceLandmarks: [r.landmarks] } : null;
+            },
+            2000,
+            // v20.2 三區守門: HSV 沒抓到口罩/墨鏡/帽子才允許採樣
+            () => {
+              const occ = getOcclusionResult();
+              return !occ.hasMask && !occ.hasSunglasses && !occ.hasHat;
+            },
+            30000,
+          );
+          if (baseline && !gateBaselineRef.current) {
+            await gateSaveBaseline(baseline);
+            gateBaselineRef.current = baseline;
+            setGateBaselineReady(true);
+            devLog('[FaceRec/Gate] Auto-calibrate ok, n=', baseline.n);
+          } else {
+            devWarn('[FaceRec/Gate] Auto-calibrate failed (HSV 一直判定有口罩 / 採樣不足)');
+          }
+        }, 1000);
+      }
     } catch (err) {
       devWarn('[FaceRec] Camera/model init failed:', err);
       setStatusAndRef('error');
@@ -516,10 +604,27 @@ export function useFaceRecognition({
     const detector = activeDetectorRef.current;
     if (!detector) return;
 
+    // === v20.6 Occlusion Gate — 只在挑戰前 check 一次 ===
+    // 一旦該幀過閘門 → occlusionConfirmedRef=true，整個流程不再 gate（避免轉頭時誤判遮擋）
+    if (!occlusionConfirmedRef.current) {
+      const baseline = gateBaselineRef.current;
+      if (baseline) {
+        const fp = gateFramePass(video, detection.landmarks, baseline);
+        if (!fp.pass) {
+          gateRejectedFramesRef.current++;
+          setGateOcclusion({ region: fp.occludedRegion ?? 'unknown' });
+          return;
+        }
+        setGateOcclusion(null);
+        occlusionConfirmedRef.current = true;
+      }
+    }
+
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
     maybeSpoofCapture(video, geometry, now);
 
     // 遮擋偵測：首次偵測到口罩 → 注入移除挑戰到序列最前
+    // (legacy HSV+Blendshape，閘門已先過濾遮擋幀，此邏輯實質上不再觸發；保留為向後相容)
     const occlusion = getOcclusionResult();
     if (occlusion.hasMask) {
       detector.injectOcclusionChallenges(occlusion);
@@ -532,20 +637,42 @@ export function useFaceRecognition({
     // 只在轉頭掃描階段收集 3D 幀（眨眼不收集，挑戰完成後也不再收集）
     if (challenge === 'turn_head' || challenge === 'turn_right' || challenge === 'turn_left') {
       const yaw = detection.yaw ?? 0;
+      // pitch proxy: noseOffsetY 反向（noseY<0 = 抬頭/向上）
+      const pitch = -(geometry.noseOffsetY ?? 0);
       setCurrentYaw(yaw);
-      const zone = getYawZone(yaw);
-      const zoneCount = zoneCountsRef.current[zone];
-      const zoneTarget = YAW_ZONES[zone].target;
 
-      if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
-        const frame: CapturedFrame = {
-          landmarks: detection.landmarks as unknown as Landmark3D[],
-          matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
-          yaw,
-        };
-        capturedFramesRef.current.push(frame);
-        zoneCountsRef.current[zone]++;
-        lastCaptureMsRef.current = now;
+      // v20.7: 依 +字 phase 決定收 yaw 或 pitch zone
+      const phase = activeDetectorRef.current?.getScanHits().phase ?? 'yaw';
+      const isPitchPhase = phase === 'pitch';
+
+      if (isPitchPhase) {
+        const pzone = getPitchZone(pitch);
+        const pcount = pitchZoneCountsRef.current[pzone];
+        const ptarget = PITCH_ZONES[pzone].target;
+        if (ptarget > 0 && pcount < ptarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+          const frame: CapturedFrame = {
+            landmarks: detection.landmarks as unknown as Landmark3D[],
+            matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+            yaw,
+          };
+          capturedFramesRef.current.push(frame);
+          pitchZoneCountsRef.current[pzone]++;
+          lastCaptureMsRef.current = now;
+        }
+      } else {
+        const zone = getYawZone(yaw);
+        const zoneCount = zoneCountsRef.current[zone];
+        const zoneTarget = YAW_ZONES[zone].target;
+        if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+          const frame: CapturedFrame = {
+            landmarks: detection.landmarks as unknown as Landmark3D[],
+            matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+            yaw,
+          };
+          capturedFramesRef.current.push(frame);
+          zoneCountsRef.current[zone]++;
+          lastCaptureMsRef.current = now;
+        }
       }
 
       // 每幀都更新 UI zone 進度（即時反映頭部方向，不只在捕獲成功時）
@@ -572,6 +699,12 @@ export function useFaceRecognition({
       }
     }
 
+    // v20.3: 把 +字 scanHits 同步到 state（給 PlusProgressBar 顯示）
+    if (activeDetectorRef.current) {
+      const hits = activeDetectorRef.current.getScanHits();
+      setScanHits(hits);
+    }
+
     if (!challenge) {
       // 所有挑戰完成 — 計算骨骼比率 structural ID
       if (statusRef.current !== 'capturing') {
@@ -585,6 +718,11 @@ export function useFaceRecognition({
             boneRatioResultRef.current = {
               frontalBins: Object.fromEntries(result.frontalBins),
               hash: result.hashes.hashCombined,
+              hash2D: result.hashes.hash2D,
+              hash3D: result.hashes.hash3D,
+              hashCombined: result.hashes.hashCombined,
+              lshHash: result.lshHash,
+              frontalRaw: { ...result.frontalRaw },
             };
 
             const antiSpoof = computeAntiSpoofResult();
@@ -677,6 +815,25 @@ export function useFaceRecognition({
 
     setStatusAndRef('face_detected');
 
+    // === v20.6 Occlusion Gate — 只在開始前 check 一次 ===
+    if (!occlusionConfirmedRef.current) {
+      const occHsv = getOcclusionResult();
+      if (occHsv.hasMask || occHsv.hasSunglasses || occHsv.hasHat) {
+        return;
+      }
+      const baseline = gateBaselineRef.current;
+      if (baseline) {
+        const fp = gateFramePass(video, detection.landmarks, baseline);
+        if (!fp.pass) {
+          gateRejectedFramesRef.current++;
+          setGateOcclusion({ region: fp.occludedRegion ?? 'unknown' });
+          return;
+        }
+        setGateOcclusion(null);
+      }
+      occlusionConfirmedRef.current = true;
+    }
+
     // 邊偵測邊擷取防偽推論
     maybeSpoofCapture(video, geometry, now);
 
@@ -761,17 +918,21 @@ export function useFaceRecognition({
       // 從 CapturedFrame[] 提取 landmarks 陣列
       const loginLandmarks = frames.map(f => f.landmarks);
 
-      // 用 matchLoginBins 比對
-      const storedBins = new Map(Object.entries(storedData.frontalBins).map(
-        ([k, v]) => [k, v as number]
-      ));
-      const matchResult = matchLoginBins(loginLandmarks, storedBins);
+      // v18: LSH 比對 — 取代 exact bin equality，擋「別人/半臉也能登」
+      if (!storedData.lshHash) {
+        devWarn('[FaceRec] Stored data missing lshHash — user must re-register');
+        setStatusAndRef('failed');
+        return failResult;
+      }
 
-      const matchRate = matchResult.matchRate;
-      setSimilarity(matchRate);
+      const lshResult = await matchLoginLSH(loginLandmarks, storedData.lshHash);
 
-      const isMatch = matchResult.passed;
-      const autoLoginReady = matchRate >= autoLoginThreshold;
+      // similarity 對外仍用 0~1（漢明 0=完全相同 → similarity 1）
+      const similarity01 = lshResult.similarity;
+      setSimilarity(similarity01);
+
+      const isMatch = lshResult.passed;
+      const autoLoginReady = similarity01 >= autoLoginThreshold;
       setStatusAndRef(isMatch ? 'verified' : 'failed');
       setIsVerified(isMatch);
 
@@ -779,8 +940,8 @@ export function useFaceRecognition({
       const antiSpoof = computeAntiSpoofResult();
       setAntiSpoofResult(antiSpoof);
 
-      devLog(`[FaceRec] Verification (bone ratio): matchRate=${matchRate.toFixed(3)} (${matchResult.matchCount}/${matchResult.totalCompared}), pass=${isMatch}, autoLogin=${autoLoginReady}, antiSpoof=${antiSpoof.score.toFixed(3)}`);
-      return { matched: isMatch, similarity: matchRate, autoLoginReady };
+      devLog(`[FaceRec] Verification (LSH): hamming=${lshResult.hammingDistance}/128, similarity=${similarity01.toFixed(3)}, pass=${isMatch}${lshResult.uncertain ? ' (uncertain)' : ''}, autoLogin=${autoLoginReady}, antiSpoof=${antiSpoof.score.toFixed(3)}`);
+      return { matched: isMatch, similarity: similarity01, autoLoginReady };
     } catch (err) {
       devWarn('[FaceRec] Verification failed:', err);
       setStatusAndRef('failed');
@@ -802,6 +963,8 @@ export function useFaceRecognition({
     setIsVerified(false);
     setAntiSpoofResult(null);
     capturedFramesRef.current = [];
+    zoneCountsRef.current = [0, 0, 0, 0, 0];
+    pitchZoneCountsRef.current = [0, 0, 0, 0, 0];
     boneRatioResultRef.current = null;
     activeDetectorRef.current = null;
     passiveDetectorRef.current = null;
@@ -809,6 +972,7 @@ export function useFaceRecognition({
     spoofVotesRef.current = [];
     cnnRunningRef.current = false;
     livenessPassedRef.current = false;
+    occlusionConfirmedRef.current = false;
     lastCnnTimestampRef.current = 0;
     // Reset diagnostic counters
     faceDetectedCountRef.current = 0;
@@ -831,6 +995,41 @@ export function useFaceRecognition({
     };
   }, []);
 
+  // =========================================================================
+  // v20 Occlusion Gate API
+  // =========================================================================
+
+  /**
+   * 採 ~2 秒乾淨臉 → 建 baseline（每個 landmark 的 lap + RGB 平均）→ 存 localStorage
+   * App 在第一次註冊前應呼叫此 API（鏡頭已經 Start 後）
+   * 之後 register/verify 會自動讀 baseline 跑閘門
+   */
+  const calibrateGate = useCallback(async (durationMs = 2000): Promise<boolean> => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2) {
+      devWarn('[FaceRec/Gate] calibrateGate: camera not ready');
+      return false;
+    }
+    const baseline = await gateCalibrateBaseline(
+      video,
+      (v, ts) => {
+        const r = detectFace(v, ts);
+        if (!r) return null;
+        return { faceLandmarks: [r.landmarks] };
+      },
+      durationMs,
+    );
+    if (!baseline) {
+      devWarn('[FaceRec/Gate] calibrateGate: not enough samples');
+      return false;
+    }
+    await gateSaveBaseline(baseline);
+    gateBaselineRef.current = baseline;
+    setGateBaselineReady(true);
+    devLog('[FaceRec/Gate] Calibrated, baseline n=', baseline.n);
+    return true;
+  }, []);
+
   return {
     status,
     currentChallenge,
@@ -840,13 +1039,21 @@ export function useFaceRecognition({
     isVerified,
     cnnReady,
     antiSpoofResult,
-    occlusion: getOcclusionResult(),
+    // v20.8: HSV 三區也 gate — 過了第一次後，UI 不再顯示「偵測到口罩/墨鏡/帽子」警告
+    occlusion: occlusionConfirmedRef.current
+      ? { hasMask: false, hasSunglasses: false, hasHat: false }
+      : getOcclusionResult(),
     scanZones,
+    scanHits,
     scanZoneTargets,
     scanPhase,
     completedChallenge,
     currentYaw,
     videoRef,
+    // v20 Gate
+    gateBaselineReady,
+    gateOcclusion,
+    calibrateGate,
     startCamera,
     stopCamera,
     registerFace,

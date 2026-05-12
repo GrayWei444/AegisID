@@ -139,6 +139,8 @@ export interface FaceGeometry {
   mouthWidth: number;
   /** 鼻子 X 偏移（正規化）— |x|>0.15 = 轉頭 */
   noseOffsetX: number;
+  /** 鼻子 Y 偏移（正規化, +字模式用）— +y 下、-y 上 */
+  noseOffsetY: number;
   /** 臉部邊界框 */
   boundingBox: BoundingBox;
 }
@@ -187,6 +189,10 @@ export interface BoneRatioPlainData {
   hashCombined?: string;
   /** Legacy: 唯一 face hash (backward compat) */
   hash: string;
+  /** v18: 25 維 LSH hash, 128-bit binary string — login 比對用 */
+  lshHash?: string;
+  /** v18: 25 個 ratio 的 raw median — 除錯/重算 LSH 用 */
+  frontalRaw?: Record<string, number>;
 }
 
 // ============================================================================

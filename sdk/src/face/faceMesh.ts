@@ -349,11 +349,21 @@ export function extractFaceGeometry(landmarks: FaceLandmark[]): FaceGeometry {
   const minY = landmarks[LANDMARK.FACE_TOP].y;
   const maxY = landmarks[LANDMARK.FACE_BOTTOM].y;
 
+  // v20.3: 鼻子 Y 偏移（+字模式用）
+  // 0 = 正面（鼻尖在臉中央高度），+y 下（低頭），-y 上（抬頭）
+  // 用 face height 正規化
+  const faceHeight = maxY - minY;
+  const faceCenterY = (minY + maxY) / 2;
+  const noseOffsetY = faceHeight > 0
+    ? (landmarks[LANDMARK.NOSE_TIP].y - faceCenterY) / faceHeight
+    : 0;
+
   return {
     leftEAR,
     rightEAR,
     mouthWidth,
     noseOffsetX,
+    noseOffsetY,
     boundingBox: {
       x: minX,
       y: minY,

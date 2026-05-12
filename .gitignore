@@ -27,3 +27,14 @@ Thumbs.db
 # Test
 coverage/
 test-results/
+
+# Research artifacts (54MB+ — 5 sessions × 41 captures, images, sweeps)
+logs/
+
+# Backup files from face-id-test.html iterations (v16-v38)
+*.bak
+sdk/src/face/*.ts.bak
+tools/face-id-test.html.v*.bak
+
+# Claude Code settings
+.claude/
