@@ -4,6 +4,11 @@
 > **日期**: 2026-03-20
 > **目標**: 同一張臉 → 任何時間、任何光線、任何角度 → 永遠同一個 hash ID
 > **測試頁面**: https://aegisrd.com/face-id-test/
+>
+> ⚠️ **歷史文件**：本份是 v14 之前的早期研究紀錄，含已放棄方向（Gabor / LBP / DCT pHash / Depth Anything 曲率場）。
+> 當前實作請看：
+> - SDK v17（已落地）→ [UNIQUE-FACE-ID.md](UNIQUE-FACE-ID.md) + [BONE-RATIO-SYSTEM.md](BONE-RATIO-SYSTEM.md)
+> - v15 研究路線 → [RESEARCH-REPORT-UNIQUE-FACE-HASH.md](RESEARCH-REPORT-UNIQUE-FACE-HASH.md)
 
 ---
 

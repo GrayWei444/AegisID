@@ -4,11 +4,12 @@
 
 AegisID 是 AegisRD 生態系的身份層，提供：
 
-- **唯一臉部 ID** — 骨骼比率 3D hash，同一人永遠同一個 ID
+- **唯一臉部 ID** — 2D + 3D 骨骼比率聯合 hash，同一人永遠同一個 ID
 - **匿名信用** — 詐騙風險分數跟著臉走，不洩露真實身份
 - **防批量建號** — 唯一 ID O(1) 查重 + rate limiting
 - **跨裝置恢復** — 轉頭掃臉 → 唯一 ID → VPS 查表 → 恢復帳號
-- **日常登入** — 平面刷臉 + Anti-spoof + PIN 三層驗證
+- **日常登入** — 平面刷臉 + Anti-spoof + 活體挑戰（眨眼 / 轉頭 / 脫口罩）+ PIN 多層驗證
+- **GPU/CPU 自動 fallback** — 偵測 MediaPipe GPU shader 故障時自動切 CPU delegate
 
 ## 核心原則
 
@@ -50,7 +51,7 @@ AegisID/
 │       └── credit/        # 信用 token
 ├── models/                # ONNX 模型（anti-spoof）
 ├── docs/                  # 設計文件
-└── tools/                 # 測試工具（face-id-test.html v14）
+└── tools/                 # 測試工具（face-id-test.html v17+）
 ```
 
 ## 快速開始

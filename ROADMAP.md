@@ -1,8 +1,8 @@
 # AegisID 開發路線圖
 
-> **版本**: 0.2.0
+> **版本**: 0.3.0
 > **建立日期**: 2026-03-14
-> **最後更新**: 2026-03-20
+> **最後更新**: 2026-05-04
 > **定位**: AegisRD 生態系匿名身份認證系統
 
 ---
@@ -12,22 +12,25 @@
 | Phase | 名稱 | 預估時間 | 狀態 | 依賴 |
 |-------|------|----------|------|------|
 | **Phase 1** | 專案建置 + CNN 遷移 | 1-2 天 | ✅ 完成 | - |
-| **Phase 1.5** | 唯一臉部 ID 研究 | 持續 | 🔄 進行中 | Phase 1 |
-| **Phase 2** | CNN 跨鏡頭穩定性驗證 | 2-3 天 | ⏳ | Phase 1 |
-| **Phase 2.5** | 滑動手勢辨識研究 | 持續 | 🔄 進行中 | Phase 1 |
-| **Phase 3** | 滑動手勢 + PIN 行為重新設計 | 3-5 天 | ⏳ | Phase 2.5 |
-| **Phase 4** | 固定尺寸 PIN 鍵盤 | 1-2 天 | ⏳ | Phase 3 |
-| **Phase 5** | LSH 系統升級 | 2-3 天 | ⏳ | Phase 2, 3 |
-| **Phase 6** | VPS 三表資料庫 | 2-3 天 | ⏳ | Phase 5 |
-| **Phase 7** | VPS API — 註冊與查找 | 3-5 天 | ⏳ | Phase 6 |
-| **Phase 8** | 聯合信心分數 | 2-3 天 | ⏳ | Phase 7 |
-| **Phase 9** | 加密身份包 | 2-3 天 | ⏳ | Phase 7 |
-| **Phase 10** | 防批量建號 (Rate Limiting) | 2-3 天 | ⏳ | Phase 7 |
-| **Phase 11** | 信用分數系統 | 2-3 天 | ⏳ | Phase 7 |
-| **Phase 12** | AegisTalk 整合 | 5-7 天 | ⏳ | Phase 8-11 |
-| **Phase 13** | 跨裝置恢復流程 | 3-5 天 | ⏳ | Phase 12 |
+| **Phase 1.5** | 唯一臉部 ID 研究（v14 → v17 → v15）| 持續 | 🔄 v17 已落地，v15 SDK 整合 pending | Phase 1 |
+| **Phase 2** | CNN 跨鏡頭穩定性驗證 | 2-3 天 | ❌ 取消（CNN 已從架構移除） | — |
+| **Phase 2.5** | 滑動手勢辨識研究 | 持續 | ❌ 已放棄（PIN 純密碼，不做行為指紋） | — |
+| **Phase 3** | 滑動手勢 + PIN 行為重新設計 | 3-5 天 | ❌ 已放棄 | — |
+| **Phase 4** | 固定尺寸 PIN 鍵盤 | 1-2 天 | ❌ 已放棄（PIN 不做行為指紋，鍵盤不需固定）| — |
+| **Phase 5** | LSH 系統升級 | 2-3 天 | ❌ 取消（改用骨骼比率 hash 直接 O(1) 查重）| — |
+| **Phase 6** | VPS 三表資料庫 | 2-3 天 | ✅ 完成 | — |
+| **Phase 7** | VPS API — 註冊與查找 | 3-5 天 | ✅ 完成（在 AegisTalk api/main.py）| Phase 6 |
+| **Phase 7.5** | 活體挑戰 + GPU/CPU fallback | 持續 | ✅ blink/turn_head/remove_mask + GPU fallback | Phase 1.5 |
+| **Phase 8** | 聯合信心分數 | 2-3 天 | ❌ 不適用（hash 是確定性的，不需要模糊匹配）| — |
+| **Phase 9** | 加密身份包 | 2-3 天 | ✅ 完成（在 AegisTalk identityAnchor.ts）| Phase 7 |
+| **Phase 10** | 防批量建號 (Rate Limiting) | 2-3 天 | ✅ 完成（face_hash + IP + 裝置維度）| Phase 7 |
+| **Phase 11** | 信用分數系統 | 2-3 天 | ⏳ 待開始 | Phase 7 |
+| **Phase 12** | AegisTalk 整合 | 5-7 天 | ✅ 完成（hook + DatabaseAdapter）| Phase 7 |
+| **Phase 13** | 跨裝置恢復流程 | 3-5 天 | ⏳ 待端到端測試 | Phase 12 |
 | **Phase 14** | LINE PWA 註冊流程 | 3-5 天 | ⏳ | Phase 13 |
 | **Phase 15** | 穩定性調優 + 閾值校準 | 3-5 天 | ⏳ | Phase 14 |
+| **Phase 16** | v15 26 特徵 SDK 整合 + 跨人區分性 | 1 週 | ⏳ M1+M3 目標 | Phase 1.5 |
+| **Phase 17** | 已知 bug 修復（半臉 / 口罩誤判）| 3-5 天 | ⏳ | — |
 
 ---
 
@@ -74,52 +77,56 @@
 
 ---
 
-## Phase 1.5: 唯一臉部 ID 研究 🔄 進行中
+## Phase 1.5: 唯一臉部 ID 研究 🔄 v17 已落地，v15 SDK 整合 pending
 
 **目標**: 讓同一個人不管怎麼掃臉，ID 永遠相同。不是模糊匹配，是確定性唯一身份。
 
 **核心差異**: 傳統辨識是 `similarity > threshold → 通過`（模糊），AegisID 要的是 `f(同一張臉) → 永遠相同的 hash`（確定性）。
 
-### 已完成
+### 已完成（v14 → v17）
 
 - [x] 影像正規化管線研究 — ArcFace align → gray → histEq → 橢圓遮罩
 - [x] 正規化管線驗證 — SSIM avg 0.993, pHash 4×4 100% exact match
 - [x] 深度路線評估 — Depth Anything V2 + Laplacian 曲率場 → ❌ 放棄（穩定性 26%）
-- [x] pHash 穩定性測試 — 4×4 (15bit) 100% stable, 8×8 (63bit) 2-4 bit drift
-- [x] 骨骼比率初始測試 — 12 比率，10/12 穩定 (83%)
 - [x] 骨骼比率擴充 — 12 → 30 → 67 個比率
-- [x] SDK 模組建立 — `structuralId.ts` 正規化管線已實作
-- [x] 測試頁面 — https://aegisrd.com/face-id-test/
-- [x] 文件建立 — UNIQUE-FACE-ID.md, BONE-RATIO-SYSTEM.md, IMAGE-NORMALIZATION.md
-- [x] 3D 視頻掃描管線 — 連續錄影 + 自動截圖 + 多角度 3D 重建
-- [x] 偽彩深度可視化 — Jet colormap 3D 臉模型（正面/側面/俯視）
 - [x] Bin 邊界漂移研究 — floor() vs round() 量化，系統性邊界分析
-- [x] BIN_WIDTH 最佳化 — 0.10 → 0.15 → 0.25，round() 量化
-- [x] 穩定比率篩選 — 67 → 24 個穩定比率，3 輪 3D Multi-Test 24/24 全部一致 ✅
-- [x] v14 統一架構設計 — 一套骨骼比率系統服務註冊（3D hash）和登入（平面 bin match）
-- [x] 正面基準提取 — 3D 掃描時自動取最佳正面幀，存本機作登入基準
-- [x] Login Test 模式 — 平面刷臉 vs 正面基準 bin 比對
+- [x] **v14 完成（2026-03-20）**：BIN_WIDTH=0.25 + round()，24/24 穩定（純 3D 比率）
+- [x] **v17 SDK 落地（2026-03-22, commit 65b00b1）**：
+  - 多基準正規化（fh / (IPD+browW)/2 / 自比率）
+  - floor-biased 量化（frac≥0.80 才 ceil）
+  - 真 3D 三角測量（multi-ray LSQ）
+  - 25 個 2D 比率 + 11 個 3D 特徵 → hash2D + hash3D → SHA-256(combined)
+  - 3/3 同人重複掃描 hash 一致 ✅
+- [x] 正面基準提取 + Login Test 模式
+- [x] AegisTalk hook 整合（re-export from SDK）
+
+### v15 並行研究（2026-04-14 ~ 04-16）
+
+- [x] 5 sessions × 41 captures（基線、多表情、帽子+翹嘴+眼鏡、極端表情、鼓臉頰）
+- [x] 2D + 3D 雙座標候選池（99 個 raw → 26 個篩選後）
+- [x] offset=0 嚴格篩選 + 黑名單法（10 項表情/配飾敏感特徵剔除）
+- [x] 41/41 captures 100% bin 一致 ✅（同人 N=1）
+- [x] 研究報告完成（[docs/RESEARCH-REPORT-UNIQUE-FACE-HASH.md](docs/RESEARCH-REPORT-UNIQUE-FACE-HASH.md)）
+- [ ] **跨人區分性驗證（M1，原訂 2026-04-20，已逾期）**
+- [ ] **SDK 整合 26 特徵（M3，目標 2026-05-15）**
 
 ### 進行中
 
-- [ ] 3D vs 平面 match rate 驗證（目標 ≥80%）
-- [ ] 不同距離穩定性測試
-- [ ] 不同裝置穩定性測試
-- [ ] 區分力驗證（不同人測試）
-- [ ] `structuralId.ts` 完整實作（含 3D 重建 + 登入比對）
+- [ ] 半臉攻擊防護（landmark visibility 檢查）
+- [ ] 口罩判定誤判修復（白皮膚冷光下 skinRatio 偏低）
+- [ ] 跨機型驗證（Android + 桌面 WebRTC）
 
 ### 關鍵發現
 
 1. **背景是最大干擾源** — 橢圓遮罩消除背景後 SSIM 從 ~0.85 提升到 0.993
 2. **全局 histEq 優於 CLAHE** — CLAHE 分區處理反而扭曲五官邊界
-3. **不需要 Gaussian blur** — SSIM 0.993 已經夠穩定，模糊反而丟資訊
-4. **深度路線不可行** — 單目深度推論不確定性太大，曲率場二階微分放大誤差
-5. **骨骼比率有潛力** — 83% → 100% 穩定（BIN_WIDTH=0.25 + round()）
-6. **策略轉向：大量擴充後篩選** — 67 比率覆蓋所有面部區域，篩選出 24 個穩定子集
-7. **Bin 邊界是根本問題** — floor() 邊界在 0.x0，round() 移到 0.x5，加大 BIN_WIDTH 避開
-8. **BIN_WIDTH=0.25 + round() 是最優組合** — 邊界在 0.125/0.375/0.625/0.875，所有比率安全避開
-9. **統一系統可行** — 骨骼比率同時服務 3D 唯一 ID 和平面登入，不需要 CNN
-10. **Anti-spoof 仍然需要** — MiniFASNet 防偽保留（612KB），CNN 13MB 不再需要
+3. **深度路線不可行** — 單目深度推論不確定性太大，曲率場二階微分放大誤差
+4. **單一 ipdN 基準不夠穩** — v17 改成多基準（vertical=fh, horizontal=(IPD+browW)/2）
+5. **round() 仍會跨邊界** — v17 改用 floor-biased（frac≥0.80 才 ceil），把跨界區推到 0.20×BIN_WIDTH
+6. **2D + 3D 都要** — 純 3D 受三角測量誤差影響、純 2D 缺深度資訊；混合最穩
+7. **MediaPipe matrix 不可信** — yaw 改用 landmark 幾何直接算，不依賴 face_geometry calculator
+8. **GPU shader 在某些 Android 設備會壞** — 必須有 CPU fallback（2026-05-04 shipped）
+9. **offset sweep 是過擬合** — v15 研究刻意只用 offset=0 嚴格篩選，41/41 才有意義
 
 ### 相關文件
 
@@ -134,43 +141,23 @@
 
 ---
 
-## Phase 2.5: 滑動手勢辨識研究 🔄 進行中
+## Phase 2.5: 滑動手勢辨識研究 ❌ 已放棄
 
-**目標**: 驗證「往上滑解鎖」手勢作為行為辨識的第二層驗證
+**結論（2026-03-22）**: 滑動手勢區分力夠（不同指 SNR > 2），但**無法產生穩定 hash**（速度曲線每次變化太大），不適合作為確定性身份的一部分。PIN 改回純密碼（Argon2id key derivation）。
 
-**核心概念**: 臉部辨識 → 確認 → 往上滑解鎖 → 滑動行為驗證（如 iPhone Face ID 後的解鎖手勢）
+### 為什麼放棄
 
-### 已完成
+1. 速度曲線雖有區分力但跨次變異大 — 量化後 bin 跳動，無法產生確定性 hash
+2. PIN 時序也不穩 — 觸控感測器數據（pressure/orientation/touchMajor）不可靠
+3. 確定性唯一 ID 已經由骨骼比率系統提供 — 不需要再加一層不穩定特徵
 
-- [x] 觸控感測器調查 — Samsung SM-F9560 MotionEvent 測試
-- [x] 觸控感測器結論 — pressure/orientation 無用，touchMajor/Minor 噪音太大
-- [x] Capacitor 原生 App — NativeTouchPlugin.java（MOVE 事件 + 歷史採樣）
-- [x] Swipe Up 手勢測試 — 路徑形狀 + 速度曲線 + 加速度特徵
-- [x] **同指穩定性驗證** — 7 個特徵 SNR < 1 ✅
-- [x] **不同指區分力驗證** — 7 個特徵 SNR > 2（最高 6.6）✅
-- [x] PIN + Swipe 聯合測試 — PIN 時序 + 滑動手勢組合
+### 保留的相關研究紀錄
 
-### 進行中
+- 觸控物理數據（pressure/orientation/touchMajor）不可行 — Samsung 的 pressure=1.0, orientation=0.0
+- 滑動手勢 8 個高 SNR 特徵（endY, pathLength, straightness, xDrift, s50, maxSpeed, avgSpeed, s75）— 區分力 OK 但量化不穩
+- `touch-test-app/`、`sdk/src/behavior/` 目錄保留代碼但不再使用
 
-- [ ] 不同人區分力驗證（同手指、不同人）
-- [ ] 跨 session 穩定性驗證（隔天再測）
-- [ ] 特徵量化 → bin hash → 確定性 ID
-- [ ] 整合到 face-id-test.html（臉 + 滑動聯合測試）
-
-### 關鍵發現
-
-1. **觸控物理數據不可行** — Samsung 的 pressure=1.0, orientation=0.0, touchMajor CV>20%
-2. **滑動手勢路徑+速度是正確方向** — 只需 x, y, timestamp，不依賴硬體
-3. **8 個高 SNR 特徵**: endY(6.6), pathLength(5.4), straightness(4.4), xDrift(2.9), s50(2.5), maxSpeed(2.4), avgSpeed(2.2), s75(2.2)
-4. **PIN 按鍵指紋 SNR 幾乎都 < 1** — 瀏覽器/原生觸控數據均不足以區分手指
-5. **行為特徵 > 物理特徵** — 人的動作習慣比觸控感測器數據更穩定、更有區分力
-
-### 測試工具
-
-| 工具 | 路徑 | 說明 |
-|------|------|------|
-| 原生 App | `touch-test-app/` | Capacitor Android App，含 Swipe Up + PIN 測試 |
-| PWA 測試 | `tools/face-id-test.html` | 瀏覽器版，臉 + 滑動聯合測試（待更新）|
+詳見 ADR-015 廢止記錄與 [HANDOVER.md](HANDOVER.md)。
 
 ---
 
@@ -696,16 +683,17 @@ A 在 LINE 丟連結 → B 點開 → LINE WebView
 
 ## 里程碑
 
-| 里程碑 | 目標日期 | 內容 |
-|--------|----------|------|
-| M1 | Phase 2 完成 | CNN 跨鏡頭穩定性驗證通過 |
-| M2 | Phase 5 完成 | LSH 系統升級完成 |
-| M3 | Phase 8 完成 | VPS API + 聯合信心分數可用 |
-| M4 | Phase 12 完成 | AegisTalk 整合完成 |
-| M5 | Phase 14 完成 | LINE PWA 註冊流程可用 |
-| M6 | Phase 15 完成 | 閾值校準，準備上線 |
+| 里程碑 | 目標日期 | 內容 | 狀態 |
+|--------|----------|------|------|
+| M1 | 2026-04-20 | v15 跨人區分性驗證（≥3 人各 10 captures）| ⏳ 已逾期 |
+| M2 | 2026-04-30 | 半臉攻擊防護 | ⏳ 已逾期 |
+| M3 | 2026-05-15 | v15 26 特徵整合進 SDK | ⏳ 進行中 |
+| M4 | 2026-05-30 | 專利草稿 5 項 claim | ⏳ |
+| M5 | 2026-06-15 | 跨機型驗證（iOS + Android + 桌面） | ⏳ |
+| M6 | 2026-07-31 | arXiv 預印本 | ⏳ |
 
 ---
 
 **維護者**: AegisRD Team
 **建立日期**: 2026-03-14
+**最後更新**: 2026-05-04

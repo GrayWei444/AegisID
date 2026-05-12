@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>AegisID LSH 登入測試</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background:#0a0a0a; color:#eee; margin:0; padding:12px; font-size:14px; line-height:1.4; }
+  h1 { font-size:1.1em; margin:0 0 8px; color:#0f0; }
+  .row { display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; }
+  button { background:#222; color:#eee; border:1px solid #444; padding:8px 12px; border-radius:6px; font-size:14px; cursor:pointer; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.pri { background:#0a4; border-color:#0f6; }
+  button.warn { background:#530; border-color:#a60; }
+  #bar { padding:6px 8px; border:1px solid #2a2a00; background:#111; border-radius:6px; font-family:monospace; }
+  video { width:100%; max-width:480px; background:#000; border-radius:8px; transform: scaleX(-1); }
+  canvas { display:none; }
+  pre, .panel { font-family:ui-monospace, monospace; font-size:12px; white-space:pre-wrap; background:#101010; border:1px solid #2a2a2a; border-radius:6px; padding:8px; max-height:300px; overflow:auto; }
+  .panel.metric { font-size:13px; line-height:1.5; }
+  .ok { color:#0f6; }
+  .bad { color:#f55; }
+  .uncertain { color:#fa0; }
+  .muted { color:#888; }
+  .big { font-size:18px; font-weight:700; }
+  .grid { display:grid; grid-template-columns: repeat(2, 1fr); gap:4px 12px; font-family:ui-monospace,monospace; font-size:11px; }
+  .legend { font-size:11px; color:#888; margin-top:4px; }
+</style>
+</head>
+<body>
+<h1>AegisID LSH 登入測試 v18</h1>
+<div id="bar">Loading…</div>
+
+<div class="row">
+  <button id="b-start" class="pri">▶ Start Camera</button>
+  <button id="b-register" disabled>📥 Register (轉頭 8s)</button>
+  <button id="b-verify" disabled>🔓 Verify (正面 3s)</button>
+  <button id="b-clear" class="warn">🗑 Clear</button>
+</div>
+<div class="legend">Register = 慢慢轉左 → 中 → 慢慢轉右（建立 2D + 3D 基準）。Verify = 正面看鏡頭。</div>
+<div class="row">
+  <video id="vid" autoplay playsinline muted></video>
+</div>
+
+<div class="row" style="margin-top:8px">
+  <div class="panel metric" style="flex:1; min-width:280px">
+    <div><b style="color:#0f0">Stored (registered)</b></div>
+    <div id="stored">尚未註冊</div>
+  </div>
+  <div class="panel metric" style="flex:1; min-width:280px">
+    <div><b style="color:#0af">Last Verify</b></div>
+    <div id="lastVerify">-</div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:8px; max-height:240px">
+  <div><b>Verify 歷史記錄</b></div>
+  <div id="history" style="font-size:11px"></div>
+</div>
+
+<details style="margin-top:8px">
+  <summary class="muted">Per-ratio raw values（除錯）</summary>
+  <div id="ratiotable" class="grid" style="margin-top:6px"></div>
+</details>
+
+<details style="margin-top:8px">
+  <summary class="muted">Log</summary>
+  <pre id="log" style="max-height:160px"></pre>
+</details>
+
+<canvas id="canv"></canvas>
+
+<script type="module">
+//=============================================================================
+// v17 STABLE_RATIO_WHITELIST — 25 ratios（與 SDK structuralId.ts 一致）
+//=============================================================================
+const RATIOS = [
+  'F02','F03',
+  'EL02','EL03','EL04','EL06','EL08',
+  'ER02','ER03','ER04','ER06','ER08',
+  'B01','B02','B04','B05','B06','B07',
+  'N01','N02','N03','N04','N10',
+  'X03','X05'
+];
+
+// v18 LSH constants（與 SDK structuralLsh.ts 一致）
+const POP_MEANS = {
+  F02:0.40, F03:0.16,
+  EL02:0.62, EL03:0.48, EL04:0.32, EL06:0.44, EL08:0.50,
+  ER02:0.62, ER03:0.48, ER04:0.32, ER06:0.44, ER08:0.50,
+  B01:0.16, B02:0.16, B04:0.62, B05:0.95, B06:0.30, B07:0.30,
+  N01:0.46, N02:0.18, N03:0.42, N04:0.55, N10:0.10,
+  X03:0.55, X05:0.30
+};
+const POP_SCALES = {
+  F02:0.05, F03:0.04,
+  EL02:0.08, EL03:0.06, EL04:0.05, EL06:0.06, EL08:0.06,
+  ER02:0.08, ER03:0.06, ER04:0.05, ER06:0.06, ER08:0.06,
+  B01:0.04, B02:0.04, B04:0.08, B05:0.10, B06:0.06, B07:0.06,
+  N01:0.06, N02:0.04, N03:0.06, N04:0.10, N10:0.03,
+  X03:0.10, X05:0.06
+};
+const LSH_BITS = 128;
+const LSH_SEED = 20260509;
+const HAMMING_PASS = 24;
+const HAMMING_REJECT = 32;
+
+//=============================================================================
+// Helpers
+//=============================================================================
+function dist2d(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+function mid(a,b){ return { x:(a.x+b.x)/2, y:(a.y+b.y)/2, z:0 }; }
+function median(arr){ const s=[...arr].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; }
+
+//=============================================================================
+// v17 raw ratio computation — 直接 port 自 SDK structuralId.ts
+//=============================================================================
+function computeRatios(lm){
+  const fw = dist2d(lm[234], lm[454]);
+  const fh = dist2d(lm[10], lm[152]);
+  const ipd = dist2d(lm[33], lm[263]);
+  const browW = dist2d(lm[70], lm[300]);
+  if (fw < 0.01 || fh < 0.01 || ipd < 0.01 || browW < 0.01) return null;
+  const ref = (ipd + browW) / 2;
+
+  const leC = mid(lm[33], lm[133]);
+  const reC = mid(lm[263], lm[362]);
+  const eyeMid = mid(leC, reC);
+  const r = {};
+
+  // F
+  r.F02 = dist2d(lm[10], eyeMid) / fh;
+  r.F03 = dist2d(eyeMid, lm[2]) / fh;
+  // EL
+  r.EL02 = dist2d(lm[133], leC) / dist2d(lm[33], leC);
+  r.EL03 = dist2d(lm[133], lm[6]) / ref;
+  r.EL04 = dist2d(leC, lm[1]) / fh;
+  r.EL06 = dist2d(lm[33], lm[133]) / ref;
+  r.EL08 = dist2d(leC, lm[6]) / ref;
+  // ER
+  r.ER02 = dist2d(lm[362], reC) / dist2d(lm[263], reC);
+  r.ER03 = dist2d(lm[362], lm[6]) / ref;
+  r.ER04 = dist2d(reC, lm[1]) / fh;
+  r.ER06 = dist2d(lm[263], lm[362]) / ref;
+  r.ER08 = dist2d(reC, lm[6]) / ref;
+  // B
+  r.B01 = dist2d(lm[66], eyeMid) / fh;
+  r.B02 = dist2d(lm[296], eyeMid) / fh;
+  r.B04 = dist2d(lm[105], lm[334]) / ref;
+  r.B05 = dist2d(lm[70], lm[300]) / ref;
+  r.B06 = dist2d(lm[70], lm[105]) / ref;
+  r.B07 = dist2d(lm[300], lm[334]) / ref;
+  // N
+  r.N01 = dist2d(lm[48], lm[278]) / ref;
+  r.N02 = dist2d(lm[6], lm[2]) / fh;
+  r.N03 = dist2d(lm[6], lm[4]) / dist2d(lm[6], lm[2]);
+  r.N04 = dist2d(lm[98], lm[327]) / dist2d(lm[48], lm[278]);
+  r.N10 = dist2d(lm[4], lm[2]) / fh;
+  // X
+  r.X03 = dist2d(eyeMid, lm[6]) / ipd;
+  r.X05 = dist2d(lm[105], lm[6]) / ipd;
+  return r;
+}
+
+function medianRatios(frames){
+  const sets = frames.map(computeRatios).filter(Boolean);
+  if (sets.length === 0) return {};
+  const out = {};
+  for (const id of RATIOS) {
+    const vals = sets.map(s=>s[id]).filter(v=>Number.isFinite(v));
+    if (vals.length >= 2) out[id] = median(vals);
+    else if (vals.length === 1) out[id] = vals[0];
+  }
+  return out;
+}
+
+//=============================================================================
+// LSH (mulberry32 PRNG + random hyperplane projection)
+//=============================================================================
+function mulberry32(seed){
+  return function(){
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t>>>15, t | 1);
+    t ^= t + Math.imul(t ^ t>>>7, t | 61);
+    return ((t ^ t>>>14) >>> 0) / 4294967296;
+  };
+}
+
+let _hyperplanesCache = null;
+function hyperplanes(){
+  if (_hyperplanesCache) return _hyperplanesCache;
+  const rng = mulberry32(LSH_SEED);
+  const planes = [];
+  for (let i = 0; i < LSH_BITS; i++) {
+    const p = [];
+    for (let j = 0; j < RATIOS.length; j++) {
+      const u1 = rng(), u2 = rng();
+      p.push(Math.sqrt(-2*Math.log(u1)) * Math.cos(2*Math.PI*u2));
+    }
+    planes.push(p);
+  }
+  _hyperplanesCache = planes;
+  return planes;
+}
+
+function buildVector(rawRatios){
+  return RATIOS.map(id => {
+    const v = rawRatios[id];
+    if (v === undefined || !Number.isFinite(v)) return 0;
+    return (v - (POP_MEANS[id]||0)) / (POP_SCALES[id]||1);
+  });
+}
+
+function computeLshHash(rawRatios){
+  const v = buildVector(rawRatios);
+  const planes = hyperplanes();
+  let bits = '';
+  for (const p of planes) {
+    let dot = 0;
+    for (let i = 0; i < v.length; i++) dot += v[i] * p[i];
+    bits += dot >= 0 ? '1' : '0';
+  }
+  return bits;
+}
+
+function hamming(a, b){
+  let n = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++;
+  return n;
+}
+
+function bitsToHex(bits){
+  let h = '';
+  for (let i = 0; i < bits.length; i += 4) {
+    h += parseInt(bits.substring(i, i+4), 2).toString(16);
+  }
+  return h;
+}
+
+//=============================================================================
+// UI / Camera / MediaPipe
+//=============================================================================
+const vid = document.getElementById('vid');
+const canv = document.getElementById('canv');
+const log = document.getElementById('log');
+const bar = document.getElementById('bar');
+let fl = null;
+let ready = false;
+
+function st(t, type){
+  bar.textContent = t;
+  bar.style.color = type==='ok'?'#0f6':type==='er'?'#f55':type==='warn'?'#fa0':'#ffc107';
+  lg(t);
+}
+function lg(t){
+  log.textContent += new Date().toLocaleTimeString()+' '+t+'\n';
+  log.scrollTop = log.scrollHeight;
+}
+window.onerror = (m,s,l) => st('Err: '+m+' L'+l, 'er');
+window.onunhandledrejection = e => st('Reject: '+(e.reason?.message||e.reason), 'er');
+
+async function doStart(){
+  document.getElementById('b-start').disabled = true;
+  try {
+    st('Loading MediaPipe…');
+    const mp = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.mjs');
+    const fr = await mp.FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm');
+    fl = await mp.FaceLandmarker.createFromOptions(fr, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+        delegate: 'GPU'
+      },
+      outputFaceBlendshapes: false,
+      outputFacialTransformationMatrixes: true,  // 用來算 yaw → 篩正面幀
+      runningMode: 'VIDEO',
+      numFaces: 1
+    });
+    lg('FaceLandmarker ready');
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode:'user', width:{ideal:640}, height:{ideal:480} }
+    });
+    vid.srcObject = stream;
+    await vid.play();
+    canv.width = vid.videoWidth;
+    canv.height = vid.videoHeight;
+    lg('Camera '+canv.width+'x'+canv.height);
+
+    ready = true;
+    document.getElementById('b-register').disabled = false;
+    document.getElementById('b-verify').disabled = !localStorage.getItem('aegisid_lsh_stored');
+    st('Ready — 按 Register 註冊本人臉，再按 Verify 測試', 'ok');
+    refreshStored();
+  } catch(e){
+    st('Init err: '+e.message, 'er');
+    document.getElementById('b-start').disabled = false;
+  }
+}
+
+async function captureFrames(durationMs){
+  const frames = [];
+  const start = performance.now();
+  while (performance.now() - start < durationMs) {
+    const t = performance.now();
+    const r = fl.detectForVideo(vid, t);
+    if (r.faceLandmarks && r.faceLandmarks.length > 0) {
+      // 正規化座標（MediaPipe normalized 已是 0~1）
+      frames.push(r.faceLandmarks[0]);
+    }
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  return frames;
+}
+
+async function doRegister(){
+  document.getElementById('b-register').disabled = true;
+  document.getElementById('b-verify').disabled = true;
+  try {
+    st('註冊：保持正面，3 秒後開始錄製 5 秒…', 'warn');
+    await new Promise(r => setTimeout(r, 3000));
+    st('Recording… 保持正面 5 秒', 'warn');
+    const frames = await captureFrames(5000);
+    if (frames.length < 10) throw new Error('frames not enough: '+frames.length);
+    const raw = medianRatios(frames);
+    const hash = computeLshHash(raw);
+    const data = { hash, raw, frames: frames.length, ts: Date.now() };
+    localStorage.setItem('aegisid_lsh_stored', JSON.stringify(data));
+    st('註冊完成：'+frames.length+' frames, hash 前 32 bit = '+hash.slice(0,32), 'ok');
+    refreshStored();
+    document.getElementById('b-verify').disabled = false;
+  } catch(e){
+    st('Register err: '+e.message, 'er');
+  } finally {
+    document.getElementById('b-register').disabled = false;
+  }
+}
+
+async function doVerify(){
+  document.getElementById('b-verify').disabled = true;
+  document.getElementById('b-register').disabled = true;
+  try {
+    const stored = JSON.parse(localStorage.getItem('aegisid_lsh_stored') || 'null');
+    if (!stored) throw new Error('未註冊');
+    st('Verify：1 秒後錄 3 秒…', 'warn');
+    await new Promise(r => setTimeout(r, 1000));
+    st('Recording 3s…', 'warn');
+    const frames = await captureFrames(3000);
+    if (frames.length < 5) throw new Error('frames not enough: '+frames.length);
+    const raw = medianRatios(frames);
+    const hash = computeLshHash(raw);
+    const dist = hamming(stored.hash, hash);
+    const sim = 1 - dist/LSH_BITS;
+    const passed = dist <= HAMMING_PASS;
+    const uncertain = dist > HAMMING_PASS && dist <= HAMMING_REJECT;
+
+    const verdict = passed ? '✓ PASS (本人)' : (uncertain ? '⚠ UNCERTAIN (拒絕)' : '✗ REJECT (非本人)');
+    const cls = passed ? 'ok' : (uncertain ? 'uncertain' : 'bad');
+
+    document.getElementById('lastVerify').innerHTML =
+      `<div class="big ${cls}">${verdict}</div>
+       <div>Hamming: <b>${dist}/${LSH_BITS}</b> (similarity ${(sim*100).toFixed(1)}%)</div>
+       <div>Frames: ${frames.length}</div>
+       <div class="muted">閾值 PASS≤${HAMMING_PASS}, REJECT>${HAMMING_REJECT}</div>`;
+    st(verdict+' Hamming='+dist+'/'+LSH_BITS, passed?'ok':'er');
+
+    addHistory({ ts: new Date().toLocaleTimeString(), dist, sim, frames: frames.length, verdict });
+    showRatioTable(stored.raw, raw);
+  } catch(e){
+    st('Verify err: '+e.message, 'er');
+  } finally {
+    document.getElementById('b-verify').disabled = !localStorage.getItem('aegisid_lsh_stored');
+    document.getElementById('b-register').disabled = false;
+  }
+}
+
+function refreshStored(){
+  const stored = JSON.parse(localStorage.getItem('aegisid_lsh_stored') || 'null');
+  const el = document.getElementById('stored');
+  if (!stored) {
+    el.textContent = '尚未註冊';
+    return;
+  }
+  const ts = new Date(stored.ts).toLocaleString();
+  el.innerHTML = `<div>at: ${ts}</div>
+    <div>frames: ${stored.frames}</div>
+    <div>hash hex: <b>${bitsToHex(stored.hash).slice(0,32)}…</b></div>
+    <div class="muted">128-bit binary, 25 ratios</div>`;
+}
+
+function clearStored(){
+  if (!confirm('清除註冊資料？')) return;
+  localStorage.removeItem('aegisid_lsh_stored');
+  document.getElementById('history').textContent = '';
+  document.getElementById('ratiotable').textContent = '';
+  document.getElementById('lastVerify').textContent = '-';
+  document.getElementById('b-verify').disabled = true;
+  refreshStored();
+  st('已清除', 'warn');
+}
+
+function addHistory(rec){
+  const div = document.getElementById('history');
+  const row = document.createElement('div');
+  const cls = rec.dist <= HAMMING_PASS ? 'ok' : (rec.dist <= HAMMING_REJECT ? 'uncertain' : 'bad');
+  row.innerHTML = `<span class="${cls}">${rec.ts}</span> Hamming=${rec.dist}/${LSH_BITS} sim=${(rec.sim*100).toFixed(1)}% frames=${rec.frames} → ${rec.verdict}`;
+  div.insertBefore(row, div.firstChild);
+}
+
+function showRatioTable(stored, login){
+  const el = document.getElementById('ratiotable');
+  let html = '';
+  for (const id of RATIOS) {
+    const s = stored?.[id];
+    const l = login?.[id];
+    const diff = (s!=null && l!=null) ? (l-s) : null;
+    const sigma = diff!=null ? (diff / (POP_SCALES[id]||1)) : null;
+    const sCls = sigma!=null && Math.abs(sigma) > 1.5 ? 'bad' : (sigma!=null && Math.abs(sigma) > 0.7 ? 'uncertain' : 'muted');
+    html += `<div>${id}</div><div class="${sCls}">${s?.toFixed(3)||'-'} → ${l?.toFixed(3)||'-'} (Δ=${diff!=null?diff.toFixed(3):'-'}, σ=${sigma!=null?sigma.toFixed(2):'-'})</div>`;
+  }
+  el.innerHTML = html;
+}
+
+document.getElementById('b-start').onclick = doStart;
+document.getElementById('b-register').onclick = doRegister;
+document.getElementById('b-verify').onclick = doVerify;
+document.getElementById('b-clear').onclick = clearStored;
+
+st('按 Start Camera 開始');
+refreshStored();
+</script>
+</body>
+</html>
