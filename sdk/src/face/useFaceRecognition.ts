@@ -608,6 +608,10 @@ export function useFaceRecognition({
     const detector = activeDetectorRef.current;
     if (!detector) return;
 
+    // v20.11: 守門前先 set status='face_detected' — 不然占擋幀 return 時 UI 動畫
+    // 條件 (status='face_detected'/'challenge'/'capturing') 不符 → 動畫不顯示
+    setStatusAndRef('face_detected');
+
     // === v20.10 註冊遮擋守門（眨眼前每幀檢查；轉頭時不檢查避免側臉誤判）===
     // 不依賴 baseline，純 HSV 絕對閾值
     const _curCh = detector.getCurrentChallenge();

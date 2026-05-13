@@ -335,9 +335,10 @@ function checkSkinColorHat(
     else if (r > 150 && g > 100 && b > 60 && r > g && (r - b) > 30) skinCount++;
   }
   const skinRatio = totalCount > 0 ? skinCount / totalCount : 1;
-  // v20.4 額頭乾淨即使有瀏海/陰影通常 skinRatio ~0.35-0.7，帽簷壓眉布料/黑色會 <0.20
-  // 從 0.50 改 0.25（更寬鬆）— 配合下方 debounce 避免閃爍
-  const hasHat = skinRatio < 0.25;
+  // v20.11: 0.25 → 0.40 — 用戶實測戴帽子常通過
+  // 額頭乾淨 skinRatio ~0.35-0.7，帽簷布料 <0.30
+  // 0.40 抓得到深色帽簷又不太誤判瀏海
+  const hasHat = skinRatio < 0.40;
   return { hasHat, skinRatio };
 }
 
