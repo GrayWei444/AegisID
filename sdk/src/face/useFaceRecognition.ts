@@ -489,14 +489,18 @@ export function useFaceRecognition({
 
       if (!detection) {
         noFaceCountRef.current++;
-        if (statusRef.current !== 'ready' && statusRef.current !== 'loading') {
+        // v20.11: debounce — 連續 8 幀無臉才切 'ready'（避免大角度轉頭瞬閃）
+        // 30fps 下 8 幀 ≈ 270ms 容忍 → 大角度轉頭單幀 lost detection 不會跳 UI
+        if (noFaceCountRef.current >= 8 &&
+            statusRef.current !== 'ready' && statusRef.current !== 'loading') {
           setStatusAndRef('ready');
         }
         animFrameRef.current = requestAnimationFrame(loop);
         return;
       }
 
-      // 偵測到人臉
+      // 偵測到人臉 — reset no-face counter
+      noFaceCountRef.current = 0;
       faceDetectedCountRef.current++;
 
       // Log first face detection
