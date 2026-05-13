@@ -604,43 +604,38 @@ export function useFaceRecognition({
     const detector = activeDetectorRef.current;
     if (!detector) return;
 
-    // === v20.6 Occlusion Gate — 只在挑戰前 check 一次 ===
-    // 一旦該幀過閘門 → occlusionConfirmedRef=true，整個流程不再 gate（避免轉頭時誤判遮擋）
-    if (!occlusionConfirmedRef.current) {
-      const baseline = gateBaselineRef.current;
-      if (baseline) {
-        const fp = gateFramePass(video, detection.landmarks, baseline);
-        if (!fp.pass) {
-          gateRejectedFramesRef.current++;
-          setGateOcclusion({ region: fp.occludedRegion ?? 'unknown' });
-          return;
-        }
-        setGateOcclusion(null);
-        occlusionConfirmedRef.current = true;
+    // === v20.10 註冊遮擋守門（眨眼前每幀檢查；轉頭時不檢查避免側臉誤判）===
+    // 不依賴 baseline，純 HSV 絕對閾值
+    const _curCh = detector.getCurrentChallenge();
+    if (_curCh === 'blink') {
+      if (!detection.landmarks || detection.landmarks.length < 468) {
+        setGateOcclusion({ region: 'INCOMPLETE' });
+        return;
       }
-    } else if (gateOcclusion !== null) {
-      // v20.10 fix UI flicker: Gate 已 confirm 後仍殘留警告 state → 強制清除
-      // 用戶實測：轉頭時 UI 偶爾跳出「偵測到遮擋」又消失，是因為早期 frame 設了 state
-      // 後 confirmedRef=true 後再也沒人 reset 它
-      setGateOcclusion(null);
+      const occ = getOcclusionResult();
+      const occlusionRegion =
+        occ.hasMask ? 'BOTTOM' :
+        occ.hasSunglasses ? 'CENTER' :
+        occ.hasHat ? 'TOP' :
+        occ.hasHalfFaceLeft ? 'LEFT' :
+        occ.hasHalfFaceRight ? 'RIGHT' :
+        null;
+      if (occlusionRegion) {
+        setGateOcclusion({ region: occlusionRegion });
+        return;
+      }
+      if (gateOcclusion !== null) setGateOcclusion(null);
+    } else {
+      // 轉頭時清掉殘留遮擋警告（HSV 在側臉不可靠）
+      if (gateOcclusion !== null) setGateOcclusion(null);
     }
 
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
     maybeSpoofCapture(video, geometry, now);
 
-    // v20.9: legacy HSV 遮擋檢查只在 Gate 還未 confirm 時跑（即「挑戰前」階段）
-    //   問題：轉頭時側臉的膚色/嘴部 landmarks 不對，HSV 容易誤判口罩 → 中途注入
-    //         remove_mask challenge 打斷正在進行的轉頭流程
-    //   修法：occlusionConfirmedRef=true 後（已通過初始 Gate）就不再跑 HSV 檢查
-    //         遮擋判定全交給 v20 Gate（已是 one-shot 模式）
-    if (!occlusionConfirmedRef.current) {
-      const occlusion = getOcclusionResult();
-      if (occlusion.hasMask) {
-        detector.injectOcclusionChallenges(occlusion);
-        setCurrentChallenge(detector.getCurrentChallenge());
-        setChallengeProgress(detector.getProgress());
-      }
-    }
+    // v20.10: HSV 遮擋檢查（口罩/墨鏡）獨立於 Gate，但只在 blink 階段判定。
+    //   為什麼不依賴 Gate baseline：HSV 用絕對閾值（嘴部該是膚色卻不是 → 口罩），
+    //     v20.10: 上方守門已用 HSV 擋住遮擋幀（return 提早），這裡不再注入 challenge
 
     const challenge = detector.getCurrentChallenge();
 
@@ -825,27 +820,27 @@ export function useFaceRecognition({
 
     setStatusAndRef('face_detected');
 
-    // === v20.6 Occlusion Gate — 只在開始前 check 一次 ===
-    if (!occlusionConfirmedRef.current) {
-      const occHsv = getOcclusionResult();
-      if (occHsv.hasMask || occHsv.hasSunglasses || occHsv.hasHat) {
-        return;
-      }
-      const baseline = gateBaselineRef.current;
-      if (baseline) {
-        const fp = gateFramePass(video, detection.landmarks, baseline);
-        if (!fp.pass) {
-          gateRejectedFramesRef.current++;
-          setGateOcclusion({ region: fp.occludedRegion ?? 'unknown' });
-          return;
-        }
-        setGateOcclusion(null);
-      }
-      occlusionConfirmedRef.current = true;
-    } else if (gateOcclusion !== null) {
-      // v20.10 fix UI flicker: Gate 已 confirm 後仍殘留警告 state → 強制清除
-      setGateOcclusion(null);
+    // === v20.10 登入嚴格守門（每幀都檢查，不依賴 baseline） ===
+    // 規則：必須有完整 468+ landmarks + 任何遮擋（mask/sunglasses/hat/halfFace）都拒幀
+    // 為什麼每幀檢查：MediaPipe 對被遮 landmark 用 3DMM 幻覺座標 → LSH 仍 match
+    // → 必須在 capture frame 前用 HSV 像素層擋住，不能讓幻覺 frame 進入 LSH 比對
+    if (!detection.landmarks || detection.landmarks.length < 468) {
+      setGateOcclusion({ region: 'INCOMPLETE' });
+      return;
     }
+    const occ = getOcclusionResult();
+    const occlusionRegion =
+      occ.hasMask ? 'BOTTOM' :
+      occ.hasSunglasses ? 'CENTER' :
+      occ.hasHat ? 'TOP' :
+      occ.hasHalfFaceLeft ? 'LEFT' :
+      occ.hasHalfFaceRight ? 'RIGHT' :
+      null;
+    if (occlusionRegion) {
+      setGateOcclusion({ region: occlusionRegion });
+      return;
+    }
+    if (gateOcclusion !== null) setGateOcclusion(null);
 
     // 邊偵測邊擷取防偽推論
     maybeSpoofCapture(video, geometry, now);
@@ -1052,10 +1047,8 @@ export function useFaceRecognition({
     isVerified,
     cnnReady,
     antiSpoofResult,
-    // v20.8: HSV 三區也 gate — 過了第一次後，UI 不再顯示「偵測到口罩/墨鏡/帽子」警告
-    occlusion: occlusionConfirmedRef.current
-      ? { hasMask: false, hasSunglasses: false, hasHat: false }
-      : getOcclusionResult(),
+    // v20.10: 直接回 HSV 結果（不再依賴 occlusionConfirmedRef，因為不再用 baseline gate）
+    occlusion: getOcclusionResult(),
     scanZones,
     scanHits,
     scanZoneTargets,

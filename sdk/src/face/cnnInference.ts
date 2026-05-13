@@ -23,14 +23,19 @@ interface FrameSnapshot {
 const frameHistory: FrameSnapshot[] = [];
 const MAX_HISTORY = 30; // 約 3 秒（100ms 間隔）
 
-// 遮擋偵測結果（v20.2: 三區 HSV 擴展）
+// 遮擋偵測結果（v20.10: 五區 HSV — 不再依賴 baseline）
 export interface OcclusionResult {
   hasMask: boolean;         // 口罩（嘴巴區）
   hasSunglasses: boolean;   // 墨鏡（眼睛區）
   hasHat: boolean;          // 帽子（額頭區）
+  hasHalfFaceLeft: boolean; // 左臉頰被遮（手/牆/物體）
+  hasHalfFaceRight: boolean;// 右臉頰被遮
 }
 
-let lastOcclusion: OcclusionResult = { hasMask: false, hasSunglasses: false, hasHat: false };
+let lastOcclusion: OcclusionResult = {
+  hasMask: false, hasSunglasses: false, hasHat: false,
+  hasHalfFaceLeft: false, hasHalfFaceRight: false,
+};
 // v20.4 debounce counters — 連 N 幀一致才翻轉 lastOcclusion
 const occHitCount = { mask: 0, sg: 0, hat: 0 };
 
@@ -396,13 +401,57 @@ function checkBlendshapeMask(
  * 與 occlusionGate.ts 並用：gate 沒 baseline 時，這層先擋住主要遮擋。
  * AegisTalk UI 可分別讀 occlusion.hasMask/hasSunglasses/hasHat 顯示針對性提示。
  */
+// v20.10 半臉偵測：左/右臉頰各取 patch 算 skin %
+let _cheekCanvas: OffscreenCanvas | null = null;
+let _cheekCtx: OffscreenCanvasRenderingContext2D | null = null;
+function checkSkinColorCheek(
+  video: HTMLVideoElement,
+  landmarks: FaceLandmark[],
+  side: 'left' | 'right',
+): { occluded: boolean; skinRatio: number } {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (vw === 0 || vh === 0) return { occluded: false, skinRatio: 1 };
+  // 左臉頰 landmarks（以 image 座標，左 = image x 小）
+  // 右臉頰 landmarks（image x 大）
+  const indices = side === 'left'
+    ? [234, 93, 132, 58, 172, 136, 150, 215]   // image-left = 鏡像後使用者右臉
+    : [454, 323, 361, 288, 397, 365, 379, 435]; // image-right = 鏡像後使用者左臉
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const i of indices) {
+    const lm = landmarks[i]; if (!lm) continue;
+    const px = lm.x * vw, py = lm.y * vh;
+    if (px < minX) minX = px; if (px > maxX) maxX = px;
+    if (py < minY) minY = py; if (py > maxY) maxY = py;
+  }
+  const w = Math.round(maxX - minX), h = Math.round(maxY - minY);
+  if (w < 8 || h < 8) return { occluded: false, skinRatio: 1 };
+  if (!_cheekCanvas || _cheekCanvas.width !== w || _cheekCanvas.height !== h) {
+    _cheekCanvas = new OffscreenCanvas(w, h);
+    _cheekCtx = _cheekCanvas.getContext('2d', { willReadFrequently: true });
+  }
+  if (!_cheekCtx) return { occluded: false, skinRatio: 1 };
+  _cheekCtx.drawImage(video, minX, minY, w, h, 0, 0, w, h);
+  const data = _cheekCtx.getImageData(0, 0, w, h).data;
+  let skin = 0, total = 0;
+  for (let i = 0; i < data.length; i += 8) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    total++;
+    if (r > 80 && g > 40 && b > 20 && r > g && r > b && (r - g) > 15 && Math.abs(g - b) < 80) skin++;
+    else if (r > 150 && g > 100 && b > 60 && r > g && (r - b) > 30) skin++;
+  }
+  const skinRatio = total > 0 ? skin / total : 1;
+  // 臉頰乾淨 skinRatio ~0.6-0.9，被手/牆遮 < 0.25
+  return { occluded: skinRatio < 0.25, skinRatio };
+}
+
 function detectOcclusion(
   landmarks: FaceLandmark[],
   video: HTMLVideoElement | null,
   blendshapes: Record<string, number> | undefined,
 ): OcclusionResult {
   if (!video) {
-    return { hasMask: false, hasSunglasses: false, hasHat: false };
+    return { hasMask: false, hasSunglasses: false, hasHat: false, hasHalfFaceLeft: false, hasHalfFaceRight: false };
   }
 
   // 嘴巴：HSV + Blendshape 雙重判定
@@ -416,10 +465,16 @@ function detectOcclusion(
   // 額頭：純 HSV
   const fore = checkSkinColorHat(video, landmarks);
 
+  // v20.10 左右臉頰：純 HSV 偵測半臉遮擋
+  const leftCheek = checkSkinColorCheek(video, landmarks, 'left');
+  const rightCheek = checkSkinColorCheek(video, landmarks, 'right');
+
   return {
     hasMask,
     hasSunglasses: eyes.hasSunglasses,
     hasHat: fore.hasHat,
+    hasHalfFaceLeft: leftCheek.occluded,
+    hasHalfFaceRight: rightCheek.occluded,
   };
 }
 
@@ -460,6 +515,8 @@ export function recordFrame(
     hasMask:       occHitCount.mask >= D,
     hasSunglasses: occHitCount.sg   >= D,
     hasHat:        occHitCount.hat  >= D,
+    hasHalfFaceLeft:  fresh.hasHalfFaceLeft,  // 半臉用即時值（不 debounce）
+    hasHalfFaceRight: fresh.hasHalfFaceRight,
   };
 
   // 每 3 秒輸出一次診斷
@@ -500,7 +557,7 @@ export const isCnnFailed = isAntiSpoofFailed;
 
 export function resetBboxSmoothing(): void {
   frameHistory.length = 0;
-  lastOcclusion = { hasMask: false, hasSunglasses: false, hasHat: false };
+  lastOcclusion = { hasMask: false, hasSunglasses: false, hasHat: false, hasHalfFaceLeft: false, hasHalfFaceRight: false };
   occHitCount.mask = 0; occHitCount.sg = 0; occHitCount.hat = 0;
 }
 
