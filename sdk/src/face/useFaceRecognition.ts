@@ -618,6 +618,11 @@ export function useFaceRecognition({
         setGateOcclusion(null);
         occlusionConfirmedRef.current = true;
       }
+    } else if (gateOcclusion !== null) {
+      // v20.10 fix UI flicker: Gate 已 confirm 後仍殘留警告 state → 強制清除
+      // 用戶實測：轉頭時 UI 偶爾跳出「偵測到遮擋」又消失，是因為早期 frame 設了 state
+      // 後 confirmedRef=true 後再也沒人 reset 它
+      setGateOcclusion(null);
     }
 
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
@@ -837,6 +842,9 @@ export function useFaceRecognition({
         setGateOcclusion(null);
       }
       occlusionConfirmedRef.current = true;
+    } else if (gateOcclusion !== null) {
+      // v20.10 fix UI flicker: Gate 已 confirm 後仍殘留警告 state → 強制清除
+      setGateOcclusion(null);
     }
 
     // 邊偵測邊擷取防偽推論
