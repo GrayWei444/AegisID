@@ -22,8 +22,10 @@ import type {
 const THRESHOLDS = {
   /** EAR 低於此值 = 閉眼（0.22: iOS Safari landmark 精度較低，0.18 太嚴格） */
   BLINK_EAR: 0.22,
-  /** 鼻子偏移超過此值 = 確定轉頭（左右方向） */
+  /** 鼻子 X 偏移超過此值 = 確定左右轉頭 */
   HEAD_TURN_OFFSET: 0.18,
+  /** 鼻子 Y 偏移超過此值 = 確定上下抬/低頭（pitch 範圍比 yaw 小，threshold 要更低）*/
+  HEAD_PITCH_OFFSET: 0.10,
   /** 回正判定：偏移低於此值 = 已回正 */
   HEAD_CENTER_OFFSET: 0.06,
   /** 每個主動挑戰超時 (ms) — 3D 掃描需要更長時間 */
@@ -245,8 +247,9 @@ export class ActiveLivenessDetector {
             devLog('[Liveness] +字 Scan: yaw done (L+R hit), → pitch');
           }
         } else if (this.scanPhase === 'pitch') {
-          if (noseY < -THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.up = true;
-          if (noseY >  THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.down = true;
+          // v20.10: pitch threshold 比 yaw 低（抬頭/低頭時 nose Y 偏移範圍較小）
+          if (noseY < -THRESHOLDS.HEAD_PITCH_OFFSET) this.scanHits.up = true;
+          if (noseY >  THRESHOLDS.HEAD_PITCH_OFFSET) this.scanHits.down = true;
           if (this.scanHits.up && this.scanHits.down) {
             this.scanPhase = 'final_center';
             devLog('[Liveness] +字 Scan: pitch done (U+D hit), → final center');
