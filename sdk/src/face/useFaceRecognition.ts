@@ -623,13 +623,18 @@ export function useFaceRecognition({
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
     maybeSpoofCapture(video, geometry, now);
 
-    // 遮擋偵測：首次偵測到口罩 → 注入移除挑戰到序列最前
-    // (legacy HSV+Blendshape，閘門已先過濾遮擋幀，此邏輯實質上不再觸發；保留為向後相容)
-    const occlusion = getOcclusionResult();
-    if (occlusion.hasMask) {
-      detector.injectOcclusionChallenges(occlusion);
-      setCurrentChallenge(detector.getCurrentChallenge());
-      setChallengeProgress(detector.getProgress());
+    // v20.9: legacy HSV 遮擋檢查只在 Gate 還未 confirm 時跑（即「挑戰前」階段）
+    //   問題：轉頭時側臉的膚色/嘴部 landmarks 不對，HSV 容易誤判口罩 → 中途注入
+    //         remove_mask challenge 打斷正在進行的轉頭流程
+    //   修法：occlusionConfirmedRef=true 後（已通過初始 Gate）就不再跑 HSV 檢查
+    //         遮擋判定全交給 v20 Gate（已是 one-shot 模式）
+    if (!occlusionConfirmedRef.current) {
+      const occlusion = getOcclusionResult();
+      if (occlusion.hasMask) {
+        detector.injectOcclusionChallenges(occlusion);
+        setCurrentChallenge(detector.getCurrentChallenge());
+        setChallengeProgress(detector.getProgress());
+      }
     }
 
     const challenge = detector.getCurrentChallenge();

@@ -232,9 +232,12 @@ export class ActiveLivenessDetector {
         const noseY = geometry.noseOffsetY;
 
         // 記下達到的極端（accumulative）
-        // v20.8: revert v20.7 swap — faceMesh.ts noseOffsetX 註解「正 = 向右轉」是 authoritative
-        if (noseX >  THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.right = true;
-        if (noseX < -THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.left = true;
+        // v20.9: 修 L/R 鏡像反向。faceMesh.ts noseOffsetX 在 image space（未鏡像）。
+        //   selfie 鏡頭 CSS scaleX(-1) 翻轉顯示但 MediaPipe 拿到的是原始未翻轉幀。
+        //   用戶向右轉頭 → 原始幀鼻尖往 image-left → noseX < 0
+        //   故：noseX > 0 對應「用戶向左轉」，noseX < 0 對應「用戶向右轉」
+        if (noseX >  THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.left = true;
+        if (noseX < -THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.right = true;
 
         if (this.scanPhase === 'yaw') {
           if (this.scanHits.right && this.scanHits.left) {
