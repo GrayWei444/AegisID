@@ -455,10 +455,12 @@ function detectOcclusion(
     return { hasMask: false, hasSunglasses: false, hasHat: false, hasHalfFaceLeft: false, hasHalfFaceRight: false };
   }
 
-  // 嘴巴：HSV + Blendshape 雙重判定
+  // v20.12: HSV-only 口罩偵測（blendshape AND 過嚴，戴口罩保持中性表情時 mouthScore 也低，
+  // blend.hasMask 為 true 是 false positive 不應作為必要條件）
+  // 保留 blend 變數作為未來 sanity 用
   const skinMouth = checkSkinColorMask(video, landmarks);
-  const blend = checkBlendshapeMask(blendshapes);
-  const hasMask = skinMouth.hasMask && blend.hasMask;
+  void checkBlendshapeMask(blendshapes);
+  const hasMask = skinMouth.hasMask;
 
   // 眼睛：純 HSV
   const eyes = checkSkinColorSunglasses(video, landmarks);
@@ -505,10 +507,10 @@ export function recordFrame(
   if (video) lastVideoRef = video;
   if (blendshapes) lastBlendshapes = blendshapes;
 
-  // v20.4 更新遮擋偵測 + debounce（避免單幀閃爍卡住 UI）
+  // v20.4 更新遮擋偵測 + debounce
+  // v20.12: D=3 → D=2（之前 3 幀太多，blink 階段太短沒湊齊就過了）
   const fresh = detectOcclusion(landmarks, lastVideoRef, lastBlendshapes);
-  // 計票：連續 N 幀同方向才翻轉
-  const D = 3;  // 需要 3 幀一致才改變狀態
+  const D = 2;  // 連 2 幀一致才翻轉
   if (fresh.hasMask)        occHitCount.mask = Math.min(D, occHitCount.mask + 1); else occHitCount.mask = Math.max(0, occHitCount.mask - 1);
   if (fresh.hasSunglasses)  occHitCount.sg   = Math.min(D, occHitCount.sg + 1);   else occHitCount.sg   = Math.max(0, occHitCount.sg - 1);
   if (fresh.hasHat)         occHitCount.hat  = Math.min(D, occHitCount.hat + 1);  else occHitCount.hat  = Math.max(0, occHitCount.hat - 1);

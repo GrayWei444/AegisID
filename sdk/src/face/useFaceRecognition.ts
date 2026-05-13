@@ -608,33 +608,37 @@ export function useFaceRecognition({
     const detector = activeDetectorRef.current;
     if (!detector) return;
 
-    // v20.11: 守門前先 set status='face_detected' — 不然占擋幀 return 時 UI 動畫
-    // 條件 (status='face_detected'/'challenge'/'capturing') 不符 → 動畫不顯示
+    // v20.11: 守門前先 set status='face_detected' — 不然占擋幀 return 時 UI 動畫條件不符
     setStatusAndRef('face_detected');
 
-    // === v20.10 註冊遮擋守門（眨眼前每幀檢查；轉頭時不檢查避免側臉誤判）===
+    // === v20.12 註冊遮擋守門 — 全部 register frame 都跑（不限 blink 階段）===
     // 不依賴 baseline，純 HSV 絕對閾值
-    const _curCh = detector.getCurrentChallenge();
-    if (_curCh === 'blink') {
-      if (!detection.landmarks || detection.landmarks.length < 468) {
-        setGateOcclusion({ region: 'INCOMPLETE' });
-        return;
-      }
-      const occ = getOcclusionResult();
-      const occlusionRegion =
+    //  - 帽子：永遠檢查（額頭可見 regardless of 頭部角度）
+    //  - 口罩/墨鏡/半臉：只在 nose 中央時檢查（側臉時 landmarks 角度不對 HSV 誤判）
+    if (!detection.landmarks || detection.landmarks.length < 468) {
+      setGateOcclusion({ region: 'INCOMPLETE' });
+      return;
+    }
+    const occ = getOcclusionResult();
+    const noseX = Math.abs(geometry.noseOffsetX ?? 0);
+    const isMostlyFrontal = noseX < 0.15;
+    let occlusionRegion: string | null = null;
+    if (occ.hasHat) {
+      occlusionRegion = 'TOP';  // 帽子永遠擋
+    } else if (isMostlyFrontal) {
+      // 只在正面時判定其他遮擋
+      occlusionRegion =
         occ.hasMask ? 'BOTTOM' :
         occ.hasSunglasses ? 'CENTER' :
-        occ.hasHat ? 'TOP' :
         occ.hasHalfFaceLeft ? 'LEFT' :
         occ.hasHalfFaceRight ? 'RIGHT' :
         null;
+    }
+    {
       if (occlusionRegion) {
         setGateOcclusion({ region: occlusionRegion });
         return;
       }
-      if (gateOcclusion !== null) setGateOcclusion(null);
-    } else {
-      // 轉頭時清掉殘留遮擋警告（HSV 在側臉不可靠）
       if (gateOcclusion !== null) setGateOcclusion(null);
     }
 
