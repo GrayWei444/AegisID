@@ -761,13 +761,15 @@ def create_aegisid_router(
                 ))
                 anchor_id = cursor.lastrowid
 
-            # 記錄 rate limit
-            cursor.execute("""
-                INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('face', ?)
-            """, (face_hmac,))
-            cursor.execute("""
-                INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('ip', ?)
-            """, (ip_hmac,))
+                # 記錄 rate limit — 只在「新帳號註冊」時記。
+                # blob 同步 / 重登 re-register 走 if existing (UPDATE) 分支，
+                # 不該記 rate limit，否則高頻 blob 同步會撞「同臉 48hr 限 2 次」429。
+                cursor.execute("""
+                    INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('face', ?)
+                """, (face_hmac,))
+                cursor.execute("""
+                    INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('ip', ?)
+                """, (ip_hmac,))
 
             # 信任分數映射：pubkey_hash → account_key（跨設備信任分數持久化）
             if body.pubkey_hash:
