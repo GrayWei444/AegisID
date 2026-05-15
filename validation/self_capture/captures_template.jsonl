@@ -1,0 +1,20 @@
+# AegisID 取樣紀錄模板 (JSONL 格式)
+# 每一行 = 一次拍攝記錄, # 開頭的行會被忽略
+#
+# 必填欄位:
+#   user_id     : 拍攝者代號 (gray / friend_a / friend_b)
+#   capture_id  : 該人的第幾次拍攝 (001 ~ 020)
+#   hash        : AegisID SDK 輸出的 final_identity_hash (SHA-256 hex)
+#
+# 建議欄位:
+#   pin_hash    : PIN 的 Argon2id hash (用於確認 PIN 一致)
+#   timestamp   : ISO 8601
+#   conditions  : 拍攝條件備註 (光線/角度/表情)
+#
+# === Phase 4: 自驗 (只放你自己的 20 次拍攝) ===
+{"user_id": "gray", "capture_id": "001", "hash": "FILL_ME_SHA256_HEX", "pin_hash": "PIN_HASH_HERE", "timestamp": "2026-05-15T10:00:00Z", "conditions": "室內光,正面"}
+{"user_id": "gray", "capture_id": "002", "hash": "FILL_ME_SHA256_HEX", "pin_hash": "PIN_HASH_HERE", "timestamp": "2026-05-15T10:05:00Z", "conditions": "室內光,正面"}
+# ... 補滿 020
+#
+# === Phase 5: 跨人 (再加 2~3 個朋友的紀錄,每人 10 次) ===
+# {"user_id": "friend_a", "capture_id": "001", "hash": "...", "pin_hash": "...", ...}
