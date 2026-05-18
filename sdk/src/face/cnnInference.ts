@@ -544,6 +544,113 @@ export function getOcclusionResult(): OcclusionResult {
   return lastOcclusion;
 }
 
+// ============================================================================
+// 眼部 Pixel 級「睜眼度」偵測 — 取代 EAR landmark 距離法（戴眼鏡 EAR 不可靠）
+// ============================================================================
+let _eyeOpenCanvasL: OffscreenCanvas | null = null;
+let _eyeOpenCtxL: OffscreenCanvasRenderingContext2D | null = null;
+let _eyeOpenCanvasR: OffscreenCanvas | null = null;
+let _eyeOpenCtxR: OffscreenCanvasRenderingContext2D | null = null;
+
+/**
+ * 單眼睜眼度 — 取 landmark tight bbox 後做 pixel 級分析。
+ *
+ * 為什麼不用 EAR：戴眼鏡時 MediaPipe 把眼皮 landmark 卡在鏡框邊緣，
+ * EAR 變化幅度被壓縮，無法可靠偵測閉眼。
+ *
+ * 改用兩個 pixel 信號合成：
+ *   1. dark ratio：luminance < 60 的 pixel 比例（睜眼時虹膜/瞳孔可見，閉眼時眼皮均勻膚色）
+ *   2. variance：眼部 region luminance 變異（睜眼時虹膜暗、鞏膜亮、對比強；閉眼時均勻）
+ *
+ * 回傳 openness ∈ [0, 1]，越大越睜，鎖眼通常 < 0.2，睜眼通常 > 0.5。
+ */
+function computeSingleEyeOpenness(
+  video: HTMLVideoElement,
+  landmarks: FaceLandmark[],
+  eyeSide: 'left' | 'right',
+): number {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (vw === 0 || vh === 0) return 1;
+
+  // MediaPipe 478 face mesh：眼部四極點
+  // Left:  outer=33, inner=133, top lid=159, bottom lid=145
+  // Right: outer=263, inner=362, top lid=386, bottom lid=374
+  const indices = eyeSide === 'left' ? [33, 133, 159, 145] : [263, 362, 386, 374];
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const i of indices) {
+    const lm = landmarks[i];
+    if (!lm) continue;
+    const px = lm.x * vw;
+    const py = lm.y * vh;
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+
+  // Y 方向擴 30% 涵蓋完整眼皮活動範圍（防 landmark 卡在鏡框時 bbox 太扁）
+  const padY = (maxY - minY) * 0.3;
+  minY = Math.max(0, minY - padY);
+  maxY = Math.min(vh, maxY + padY);
+
+  const w = Math.round(maxX - minX);
+  const h = Math.round(maxY - minY);
+  if (w < 4 || h < 4) return 1;
+
+  // 使用獨立 canvas，避免左右眼共用尺寸變動造成 resize 抖動（HSV 教訓：見 memory `e2e_localstorage_pubkey_unreliable` 同類問題）
+  const canvasRef = eyeSide === 'left' ? '_eyeOpenCanvasL' : '_eyeOpenCanvasR';
+  let canvas = eyeSide === 'left' ? _eyeOpenCanvasL : _eyeOpenCanvasR;
+  let ctx = eyeSide === 'left' ? _eyeOpenCtxL : _eyeOpenCtxR;
+  if (!canvas || canvas.width !== w || canvas.height !== h) {
+    canvas = new OffscreenCanvas(w, h);
+    ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (eyeSide === 'left') { _eyeOpenCanvasL = canvas; _eyeOpenCtxL = ctx; }
+    else { _eyeOpenCanvasR = canvas; _eyeOpenCtxR = ctx; }
+  }
+  if (!ctx) return 1;
+
+  ctx.drawImage(video, minX, minY, w, h, 0, 0, w, h);
+  const data = ctx.getImageData(0, 0, w, h).data;
+
+  let darkCount = 0;
+  let totalCount = 0;
+  let sumLum = 0;
+  let sumLumSq = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (lum < 60) darkCount++;
+    sumLum += lum;
+    sumLumSq += lum * lum;
+    totalCount++;
+  }
+  if (totalCount === 0) return 1;
+
+  const mean = sumLum / totalCount;
+  const variance = sumLumSq / totalCount - mean * mean;
+  const stdDev = Math.sqrt(Math.max(0, variance));
+  const darkRatio = darkCount / totalCount;
+
+  // 經驗閾值（之後跑真實 sample 再 tune）：
+  //   睜眼：darkRatio 0.10-0.35（虹膜可見），stdDev 30-60（明暗對比強烈）
+  //   閉眼：darkRatio 0-0.05（無虹膜），         stdDev 5-15（眼皮均勻）
+  const darkScore = Math.min(1, darkRatio / 0.20);  // darkRatio 0.20+ → score 1.0
+  const varScore = Math.min(1, stdDev / 40);         // stdDev 40+ → score 1.0
+  return 0.5 * darkScore + 0.5 * varScore;
+}
+
+/** 雙眼睜眼度 — 回傳 left/right/avg */
+export function computeEyeOpenness(
+  video: HTMLVideoElement,
+  landmarks: FaceLandmark[],
+): { left: number; right: number; avg: number } {
+  const left = computeSingleEyeOpenness(video, landmarks, 'left');
+  const right = computeSingleEyeOpenness(video, landmarks, 'right');
+  return { left, right, avg: (left + right) / 2 };
+}
+
 /** 初始化 — no-op（不需要載入模型） */
 export async function initAntiSpoofModel(): Promise<void> { /* MediaPipe-based, no model to load */ }
 export const initCnnModels = initAntiSpoofModel;

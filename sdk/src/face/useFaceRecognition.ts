@@ -34,6 +34,7 @@ import {
   resetBboxSmoothing,
   recordFrame,
   getOcclusionResult,
+  computeEyeOpenness,
   type OcclusionResult,
 } from './cnnInference';
 import {
@@ -651,18 +652,22 @@ export function useFaceRecognition({
 
     const challenge = detector.getCurrentChallenge();
 
-    // 只在轉頭掃描階段收集 3D 幀（眨眼不收集，挑戰完成後也不再收集）
-    if (challenge === 'turn_head' || challenge === 'turn_right' || challenge === 'turn_left') {
+    // v20.13 分階段收幀（取代 +字掃描）：blink → turn_left → turn_right → turn_up → turn_down
+    // 每階段收滿對應 zone target → 呼叫 detector.markCurrentTurnDone() 推進到下個階段。
+    // 完成條件用 detection.yaw（3D 旋轉角度，跨眼鏡用戶穩定），不再用 noseOffsetX threshold。
+    const isTurnStage = challenge === 'turn_left' || challenge === 'turn_right'
+      || challenge === 'turn_up' || challenge === 'turn_down'
+      || challenge === 'turn_head';   // turn_head backward compat（新流程不會出現）
+    if (isTurnStage) {
       const yaw = detection.yaw ?? 0;
       // pitch proxy: noseOffsetY 反向（noseY<0 = 抬頭/向上）
       const pitch = -(geometry.noseOffsetY ?? 0);
       setCurrentYaw(yaw);
 
-      // v20.7: 依 +字 phase 決定收 yaw 或 pitch zone
-      const phase = activeDetectorRef.current?.getScanHits().phase ?? 'yaw';
-      const isPitchPhase = phase === 'pitch';
+      // 依當前 turn 階段選擇收 yaw 或 pitch zone
+      const isPitchStage = challenge === 'turn_up' || challenge === 'turn_down';
 
-      if (isPitchPhase) {
+      if (isPitchStage) {
         const pzone = getPitchZone(pitch);
         const pcount = pitchZoneCountsRef.current[pzone];
         const ptarget = PITCH_ZONES[pzone].target;
@@ -692,8 +697,23 @@ export function useFaceRecognition({
         }
       }
 
-      // 每幀都更新 UI zone 進度（即時反映頭部方向，不只在捕獲成功時）
+      // 檢查當前 turn 階段是否該推進（zone 目標達標 → detector.markCurrentTurnDone）
+      // 條件：**極端 zone 收滿** (far-*)，代表 user 真的轉到位 — 給 3D 骨骼計算最重要的角度。
+      // 中間 zone (left/right/up/down) 在過渡時自然會收，不強求單一 zone 滿；
+      // 用 sum 寬鬆條件 ≥ 極端 zone 一半當保險（轉得稍微淺也算完成，不卡住）
       const z = zoneCountsRef.current;
+      const pz = pitchZoneCountsRef.current;
+      const leftHit  = z[0] >= YAW_ZONES[0].target   || (z[0] + z[1]) >= YAW_ZONES[0].target + Math.ceil(YAW_ZONES[1].target / 2);
+      const rightHit = z[4] >= YAW_ZONES[4].target   || (z[3] + z[4]) >= YAW_ZONES[4].target + Math.ceil(YAW_ZONES[3].target / 2);
+      const upHit    = pz[0] >= PITCH_ZONES[0].target || (pz[0] + pz[1]) >= PITCH_ZONES[0].target + Math.ceil(PITCH_ZONES[1].target / 2);
+      const downHit  = pz[4] >= PITCH_ZONES[4].target || (pz[3] + pz[4]) >= PITCH_ZONES[4].target + Math.ceil(PITCH_ZONES[3].target / 2);
+
+      if (challenge === 'turn_left'  && leftHit)  detector.markCurrentTurnDone();
+      if (challenge === 'turn_right' && rightHit) detector.markCurrentTurnDone();
+      if (challenge === 'turn_up'    && upHit)    detector.markCurrentTurnDone();
+      if (challenge === 'turn_down'  && downHit)  detector.markCurrentTurnDone();
+
+      // UI zone 進度（合併三組顯示）
       const merged = {
         left: z[0] + z[1],
         center: z[2],
@@ -701,19 +721,14 @@ export function useFaceRecognition({
       };
       setScanZones({ ...merged });
 
-      // 計算掃描引導階段
-      const centerDone = merged.center >= scanZoneTargets.center;
-      const rightDone = merged.right >= scanZoneTargets.right;
-      const leftDone = merged.left >= scanZoneTargets.left;
-      if (!centerDone) {
-        setScanPhase('center');
-      } else if (!rightDone) {
-        setScanPhase('right');
-      } else if (!leftDone) {
-        setScanPhase('left');
-      } else {
-        setScanPhase('complete');
-      }
+      // UI 引導：依當前 challenge 設 scanPhase
+      const phaseMap: Record<string, 'center' | 'right' | 'left' | 'complete'> = {
+        turn_left: 'left',
+        turn_right: 'right',
+        turn_up: 'right',    // 沒有對應的 up/down phase enum；映射到 right 暫不影響邏輯
+        turn_down: 'left',
+      };
+      setScanPhase(phaseMap[challenge] ?? 'complete');
     }
 
     // v20.3: 把 +字 scanHits 同步到 state（給 PlusProgressBar 顯示）
@@ -771,6 +786,25 @@ export function useFaceRecognition({
 
     // 挑戰切換暫停中（顯示 ✓ 過渡動畫）→ 跳過 processFrame
     if (challengePausedRef.current) return;
+
+    // Blink baseline 預收 + 每幀 openness 注入 — face 偵測到的同時就餵 openness sample，
+    // 等 baseline ready 才把用戶切到 'challenge' 顯示「請眨眼」prompt。
+    // 避免「user 第一次眨眼掉進 baseline window 被 break 丟掉」。
+    //
+    // v20.13 改 openness (pixel-based) 取代 EAR (landmark-based)：戴眼鏡時 MediaPipe
+    // 把 eye landmark 卡在鏡框邊，EAR 不可靠；改用眼部 region pixel 級分析（虹膜深色/luminance variance）。
+    {
+      const pendingChallenge = detector.getCurrentChallenge();
+      if (pendingChallenge === 'blink') {
+        const openness = computeEyeOpenness(video, detection.landmarks);
+        detector.setLatestOpenness(openness.avg);
+        if (!detector.isOpennessBaselineReady()) {
+          detector.collectOpennessBaselineSample(openness.avg);
+          // 不切到 'challenge' — baseline ready 後下一幀才走正常流程
+          return;
+        }
+      }
+    }
 
     setStatusAndRef('challenge');
     const prevChallenge = detector.getCurrentChallenge();

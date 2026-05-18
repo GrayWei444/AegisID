@@ -30,8 +30,9 @@ const THRESHOLDS = {
   /** 回正判定：偏移低於此值 = 已回正。v20.10: 0.06 → 0.12 — 用戶實測 0.06
    * 過嚴卡在「請回正中央」永遠不過 → 12s timeout → 整個挑戰失敗 */
   HEAD_CENTER_OFFSET: 0.12,
-  /** 每個主動挑戰超時 (ms) — 3D 掃描需要更長時間 */
-  ACTIVE_CHALLENGE_TIMEOUT: 12000,
+  /** 每個主動挑戰超時 (ms) — v20.13: 12s → 8s 配合分階段引導 (左/右/上/下 各獨立 8s)
+   *  超時 = 該階段沒收到足夠 zone 幀數 → 整個 challenge 失敗 → user 重試 */
+  ACTIVE_CHALLENGE_TIMEOUT: 8000,
   /** 被動偵測需要的最少眨眼次數 */
   PASSIVE_MIN_BLINKS: 1,
   /** 被動偵測需要的最少微動量 */
@@ -56,20 +57,26 @@ const THRESHOLDS = {
  * 供 structuralId.ts 的 build3DModel() 建立精確的 3D 骨骼模型
  */
 export class ActiveLivenessDetector {
-  private challenges: LivenessChallenge[] = ['blink', 'turn_head'];
+  // v20.13 五階段（取代舊「+字掃描」狀態機）：
+  //   blink → turn_left → turn_right → turn_up → turn_down
+  // 每階段獨立 8s timeout（ACTIVE_CHALLENGE_TIMEOUT）。
+  // 階段完成判定改用「zone-coverage」— useFaceRecognition 收滿該方向的 yaw zone 後
+  // 呼叫 markCurrentChallengeDone() 推進。**不**再用 noseOffsetX threshold。
+  private challenges: LivenessChallenge[] = ['blink', 'turn_left', 'turn_right', 'turn_up', 'turn_down'];
   private currentIndex = 0;
   private challengeStartTime = 0;
   private completed: Map<LivenessChallenge, LivenessChallengeStatus> = new Map();
   private wasEyesClosed = false;
   private _lastEarLog = 0;
-  /** 自適應眨眼偵測：收集基線 EAR，用相對下降偵測 */
-  private earBaseline = 0;
-  private earSamples: number[] = [];
-  private earBaselineReady = false;
-  /** 掃描狀態機：idle → turned_right → turned_left → done */
-  // v20.3: +字掃描 — yaw 軸先（左/右隨便順序）→ pitch 軸（上/下隨便順序）
-  private scanPhase: 'yaw' | 'pitch' | 'final_center' = 'yaw';
-  private scanHits = { right: false, left: false, up: false, down: false };
+  /** 自適應眨眼偵測：收集基線 openness（pixel-based），用相對下降偵測。
+   *  改 openness 取代 EAR — EAR landmark 戴眼鏡時被鏡框卡住不可靠（見 cnnInference.computeEyeOpenness） */
+  private opennessBaseline = 0;
+  private opennessSamples: number[] = [];
+  private opennessBaselineReady = false;
+  /** 由 useFaceRecognition 每幀注入：當前的眼部 pixel 睜眼度（avg of L/R） */
+  private latestOpenness = 1;
+  /** 由 useFaceRecognition 在 zone 收滿時呼叫，標記當前 turn 階段完成 */
+  private currentTurnDone = false;
   /** Phase 26b: 挑戰期間 embedding 快照 */
   private snapshots: ChallengeEmbeddingSnapshot[] = [];
   /** 遮擋挑戰是否已注入（防止重複注入） */
@@ -83,27 +90,64 @@ export class ActiveLivenessDetector {
 
   /** 重置偵測器 */
   reset(): void {
-    this.challenges = ['blink', 'turn_head'];
+    this.challenges = ['blink', 'turn_left', 'turn_right', 'turn_up', 'turn_down'];
     this.currentIndex = 0;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
-    this.earBaseline = 0;
-    this.earSamples = [];
-    this.earBaselineReady = false;
+    this.opennessBaseline = 0;
+    this.opennessSamples = [];
+    this.opennessBaselineReady = false;
+    this.latestOpenness = 1;
     this._lastEarLog = 0;
-    this.scanPhase = 'yaw';
-    this.scanHits = { right: false, left: false, up: false, down: false };
+    this.currentTurnDone = false;
     this.snapshots = [];
     this.occlusionInjected = false;
     this.completed = new Map([
       ['blink', 'waiting'],
-      ['turn_head', 'waiting'],
+      ['turn_left', 'waiting'],
+      ['turn_right', 'waiting'],
+      ['turn_up', 'waiting'],
+      ['turn_down', 'waiting'],
     ]);
   }
 
   /** 設定遮擋偵測函式（由 hook 注入） */
   setOcclusionGetter(getter: () => OcclusionResult): void {
     this.occlusionGetter = getter;
+  }
+
+  /**
+   * 預收 blink baseline sample（face 偵測到後、blink 挑戰真正開始之前呼叫）
+   *
+   * 為什麼要這個 API：blink 挑戰開始就立即收 baseline，user 第一次眨眼很常掉進
+   * baseline window 被 break 丟掉（影片只眨一次的場景永遠過不了）。
+   * 改成 face 一被偵測到就開始預收，等 baseline ready 才把 UI 切到 'challenge'
+   * 顯示「請眨眼」prompt — user 看到 prompt 時 baseline 已準備好，第一次眨眼直接被偵測。
+   *
+   * v20.13 改 openness 取代 EAR（pixel-based 比 landmark 距離可靠）。
+   */
+  collectOpennessBaselineSample(openness: number): void {
+    if (this.opennessBaselineReady) return;
+    this.opennessSamples.push(openness);
+    if (this.opennessSamples.length >= 10) {
+      const sorted = [...this.opennessSamples].sort((a, b) => a - b);
+      this.opennessBaseline = sorted[Math.floor(sorted.length / 2)];
+      this.opennessBaselineReady = true;
+      // v20.13: baseline ready 才是 user 看到「請眨眼」prompt 的時刻 —
+      // 從此刻起算 8s 才公平（baseline 收集時間不該扣 user 的 budget）
+      this.challengeStartTime = Date.now();
+      console.error(`[Liveness] Blink baseline: openness=${this.opennessBaseline.toFixed(3)} (from ${this.opennessSamples.length} samples, pre-challenge)`);
+    }
+  }
+
+  /** 由 useFaceRecognition 每幀注入當前 openness — 給 evaluate() 跑 blink 判定用 */
+  setLatestOpenness(openness: number): void {
+    this.latestOpenness = openness;
+  }
+
+  /** Blink baseline 是否已收集完成（達 10 sample） */
+  isOpennessBaselineReady(): boolean {
+    return this.opennessBaselineReady;
   }
 
   /**
@@ -146,15 +190,26 @@ export class ActiveLivenessDetector {
     return { current: this.currentIndex, total: this.challenges.length };
   }
 
-  /** v20.3 取得 +字掃描的四向命中狀態（給 UI 進度顯示用） */
+  /** v20.13 取得當前 turn 階段命中狀態（給 UI 進度顯示用 — 取代舊 +字 scanHits）
+   *  phase 對映：blink→'yaw'、turn_left→'yaw'、turn_right→'yaw'、turn_up→'pitch'、turn_down→'pitch'、其他→'final_center' */
   getScanHits(): { right: boolean; left: boolean; up: boolean; down: boolean; phase: 'yaw' | 'pitch' | 'final_center' } {
+    const cur = this.getCurrentChallenge();
+    const completed = (c: LivenessChallenge) => this.completed.get(c) === 'detected';
+    let phase: 'yaw' | 'pitch' | 'final_center' = 'yaw';
+    if (cur === 'turn_up' || cur === 'turn_down') phase = 'pitch';
+    else if (cur === null) phase = 'final_center';
     return {
-      right: this.scanHits.right,
-      left: this.scanHits.left,
-      up: this.scanHits.up,
-      down: this.scanHits.down,
-      phase: this.scanPhase,
+      left: completed('turn_left'),
+      right: completed('turn_right'),
+      up: completed('turn_up'),
+      down: completed('turn_down'),
+      phase,
     };
+  }
+
+  /** 由 useFaceRecognition 在「當前 turn 階段的 zone 收滿目標幀」時呼叫，標記階段完成 */
+  markCurrentTurnDone(): void {
+    this.currentTurnDone = true;
   }
 
   /**
@@ -175,11 +230,16 @@ export class ActiveLivenessDetector {
     const avgEAR = (geometry.leftEAR + geometry.rightEAR) / 2;
     const noseX = geometry.noseOffsetX;
 
-    // 每 2 秒輸出 EAR 診斷（production 可見）
+    // Openness/EAR 診斷輸出
+    // - Prod：每 2 秒 throttle 一次（防 log flood）
+    // - Debug (localStorage.AEGIS_EAR_DUMP=true)：每幀都印（spec 收集完整時間軸用）
     if (challenge === 'blink') {
-      if (!this._lastEarLog || Date.now() - this._lastEarLog > 2000) {
-        this._lastEarLog = Date.now();
-        console.error(`[Liveness] EAR: ${avgEAR.toFixed(3)} (L:${geometry.leftEAR.toFixed(3)} R:${geometry.rightEAR.toFixed(3)}) closed:${this.wasEyesClosed} threshold:${THRESHOLDS.BLINK_EAR}`);
+      let earDump = false;
+      try { earDump = typeof localStorage !== 'undefined' && localStorage.getItem('AEGIS_EAR_DUMP') === 'true'; } catch { /* SSR */ }
+      const shouldLog = earDump || !this._lastEarLog || Date.now() - this._lastEarLog > 2000;
+      if (shouldLog) {
+        if (!earDump) this._lastEarLog = Date.now();
+        console.error(`[Liveness] openness:${this.latestOpenness.toFixed(3)} EAR:${avgEAR.toFixed(3)} closed:${this.wasEyesClosed}`);
       }
     }
 
@@ -198,72 +258,54 @@ export class ActiveLivenessDetector {
       }
 
       case 'blink': {
-        // 自適應眨眼偵測：先收集 10 個 EAR 樣本建立基線，再用相對下降偵測
-        // iOS MediaPipe EAR ~0.10-0.13（桌面 ~0.25-0.35），絕對閾值不可靠
-        if (!this.earBaselineReady) {
-          this.earSamples.push(avgEAR);
-          if (this.earSamples.length >= 10) {
-            // 取中位數作為基線（排除極端值）
-            const sorted = [...this.earSamples].sort((a, b) => a - b);
-            this.earBaseline = sorted[Math.floor(sorted.length / 2)];
-            this.earBaselineReady = true;
-            console.error(`[Liveness] Blink baseline: ${this.earBaseline.toFixed(3)} (from ${this.earSamples.length} samples)`);
+        // v20.13 改 openness (pixel-based) 取代 EAR (landmark-based)：
+        //   戴眼鏡時 MediaPipe 把 eye landmark 卡在鏡框邊，EAR 變化幅度被壓縮 (0.10-0.15)，
+        //   閉眼閾值差千分之幾就過不了。改用眼部 region pixel 級分析（虹膜深色 / luminance variance），
+        //   不依賴 landmark 距離。
+        //
+        // openness 由 useFaceRecognition.handleRegisterFrame 每幀呼叫 setLatestOpenness 注入。
+        // baseline 由 collectOpennessBaselineSample 預收（face_detected 階段、blink 挑戰開始前）。
+        if (!this.opennessBaselineReady) {
+          // baseline 沒 ready 通常不會走到這（pre-challenge collection 處理）。
+          // 保險：若未 ready，這裡也收 sample（fallback）
+          this.opennessSamples.push(this.latestOpenness);
+          if (this.opennessSamples.length >= 10) {
+            const sorted = [...this.opennessSamples].sort((a, b) => a - b);
+            this.opennessBaseline = sorted[Math.floor(sorted.length / 2)];
+            this.opennessBaselineReady = true;
+            console.error(`[Liveness] Blink baseline (fallback): openness=${this.opennessBaseline.toFixed(3)}`);
           }
           break;
         }
 
-        // 眨眼判定：EAR 下降超過基線 40% = 閉眼
-        const closeThreshold = this.earBaseline * 0.6;
-        // 睜眼判定：EAR 回到基線 80% 以上 = 眼睛重新睜開
-        const openThreshold = this.earBaseline * 0.8;
+        // 閉眼判定：openness 掉到 baseline × 40% 以下 = 閉
+        const closeThreshold = this.opennessBaseline * 0.4;
+        // 睜眼判定：openness 回到 baseline × 50% 以上 = 重新睜開
+        // （從深閉的 0.10 升回 0.5 已是明顯睜眼動作，不必非得回到 baseline）
+        const openThreshold = this.opennessBaseline * 0.5;
 
-        if (avgEAR < closeThreshold) {
+        if (this.latestOpenness < closeThreshold) {
           this.wasEyesClosed = true;
-        } else if (this.wasEyesClosed && avgEAR > openThreshold) {
-          console.error(`[Liveness] Blink detected! EAR: ${avgEAR.toFixed(3)} baseline: ${this.earBaseline.toFixed(3)} close<${closeThreshold.toFixed(3)} open>${openThreshold.toFixed(3)}`);
+        } else if (this.wasEyesClosed && this.latestOpenness > openThreshold) {
+          console.error(`[Liveness] Blink detected! openness=${this.latestOpenness.toFixed(3)} baseline=${this.opennessBaseline.toFixed(3)} close<${closeThreshold.toFixed(3)} open>${openThreshold.toFixed(3)}`);
           this.completed.set('blink', 'detected');
           this.advanceChallenge();
         }
         break;
       }
 
-      case 'turn_head':
+      case 'turn_head':       // 舊型 (留作 backward compat，不會被新 challenges list 觸發)
       case 'turn_right':
-      case 'turn_left': {
-        // v20.3 +字掃描（順序自由）
-        //   Phase 'yaw'   : 左右兩極都達到（任意順序）→ 進 pitch
-        //   Phase 'pitch' : 上下兩極都達到（任意順序）→ 進 final_center
-        //   Phase 'final_center' : 回正 → 完成
-        const noseY = geometry.noseOffsetY;
-
-        // 記下達到的極端（accumulative）
-        // v20.9: 修 L/R 鏡像反向。faceMesh.ts noseOffsetX 在 image space（未鏡像）。
-        //   selfie 鏡頭 CSS scaleX(-1) 翻轉顯示但 MediaPipe 拿到的是原始未翻轉幀。
-        //   用戶向右轉頭 → 原始幀鼻尖往 image-left → noseX < 0
-        //   故：noseX > 0 對應「用戶向左轉」，noseX < 0 對應「用戶向右轉」
-        if (noseX >  THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.left = true;
-        if (noseX < -THRESHOLDS.HEAD_TURN_OFFSET) this.scanHits.right = true;
-
-        if (this.scanPhase === 'yaw') {
-          if (this.scanHits.right && this.scanHits.left) {
-            this.scanPhase = 'pitch';
-            devLog('[Liveness] +字 Scan: yaw done (L+R hit), → pitch');
-          }
-        } else if (this.scanPhase === 'pitch') {
-          // v20.10: pitch threshold 比 yaw 低（抬頭/低頭時 nose Y 偏移範圍較小）
-          if (noseY < -THRESHOLDS.HEAD_PITCH_OFFSET) this.scanHits.up = true;
-          if (noseY >  THRESHOLDS.HEAD_PITCH_OFFSET) this.scanHits.down = true;
-          if (this.scanHits.up && this.scanHits.down) {
-            this.scanPhase = 'final_center';
-            devLog('[Liveness] +字 Scan: pitch done (U+D hit), → final center');
-          }
-        } else if (this.scanPhase === 'final_center') {
-          if (Math.abs(noseX) < THRESHOLDS.HEAD_CENTER_OFFSET
-              && Math.abs(noseY) < THRESHOLDS.HEAD_CENTER_OFFSET) {
-            console.error('[Liveness] +字 Scan complete — yaw+pitch hit, centered');
-            this.completed.set(challenge, 'detected');
-            this.advanceChallenge();
-          }
+      case 'turn_left':
+      case 'turn_up':
+      case 'turn_down': {
+        // v20.13 分階段：完成判定改由 useFaceRecognition 收滿該方向 zone 後呼叫
+        // markCurrentTurnDone() 設定 currentTurnDone=true 推進。**不**再用 noseOffsetX threshold。
+        // Stage timeout (8s) 由 processFrame 開頭的通用 timeout 檢查負責 → 自動 fail。
+        if (this.currentTurnDone) {
+          console.error(`[Liveness] ${challenge} complete (zone target reached)`);
+          this.completed.set(challenge, 'detected');
+          this.advanceChallenge();
         }
         break;
       }
@@ -275,10 +317,9 @@ export class ActiveLivenessDetector {
   /** 前進到下一個挑戰 */
   private advanceChallenge(): void {
     this.currentIndex++;
-    this.challengeStartTime = Date.now();
+    this.challengeStartTime = Date.now();  // ← 每階段獨立 timeout 計時
     this.wasEyesClosed = false;
-    this.scanPhase = 'yaw';
-    this.scanHits = { right: false, left: false, up: false, down: false };
+    this.currentTurnDone = false;          // ← 重置 zone-coverage 旗標供下一階段
   }
 
   // =========================================================================
@@ -302,8 +343,12 @@ export class ActiveLivenessDetector {
     const status = this.completed.get(challenge);
     if (status === 'waiting') {
       // 挑戰尚未偵測到動作
-      const scanStarted = this.scanHits.right || this.scanHits.left || this.scanHits.up || this.scanHits.down;
-      return this.wasEyesClosed || scanStarted ? 'during' : 'before';
+      // v20.13: 改用「任一先前階段已完成 OR 眼睛閉過」當「scan 進行中」訊號
+      const anyPrior = this.completed.get('turn_left') === 'detected'
+        || this.completed.get('turn_right') === 'detected'
+        || this.completed.get('turn_up') === 'detected'
+        || this.completed.get('turn_down') === 'detected';
+      return this.wasEyesClosed || anyPrior ? 'during' : 'before';
     }
     return 'after';
   }

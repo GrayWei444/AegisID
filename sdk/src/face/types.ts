@@ -30,7 +30,7 @@ export interface BoundingBox {
 // ============================================================================
 
 /** 活體挑戰類型 */
-export type LivenessChallenge = 'blink' | 'turn_head' | 'turn_right' | 'turn_left' | 'remove_mask';
+export type LivenessChallenge = 'blink' | 'turn_head' | 'turn_right' | 'turn_left' | 'turn_up' | 'turn_down' | 'remove_mask';
 
 /** 活體挑戰狀態 */
 export type LivenessChallengeStatus = 'waiting' | 'detected' | 'timeout';
