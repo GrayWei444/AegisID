@@ -30,9 +30,11 @@ const THRESHOLDS = {
   /** 回正判定：偏移低於此值 = 已回正。v20.10: 0.06 → 0.12 — 用戶實測 0.06
    * 過嚴卡在「請回正中央」永遠不過 → 12s timeout → 整個挑戰失敗 */
   HEAD_CENTER_OFFSET: 0.12,
-  /** 每個主動挑戰超時 (ms) — v20.13: 12s → 8s 配合分階段引導 (左/右/上/下 各獨立 8s)
-   *  超時 = 該階段沒收到足夠 zone 幀數 → 整個 challenge 失敗 → user 重試 */
-  ACTIVE_CHALLENGE_TIMEOUT: 8000,
+  /** Active challenges timeout (ms) — 通用 fallback。各 challenge 可有專屬 timeout：
+   *  blink → 8s, turn_head → 30s（4 個方向 free-order 偵測，總時間預算） */
+  ACTIVE_CHALLENGE_TIMEOUT: 30000,
+  BLINK_TIMEOUT: 8000,
+  TURN_HEAD_TIMEOUT: 45000,
   /** 被動偵測需要的最少眨眼次數 */
   PASSIVE_MIN_BLINKS: 1,
   /** 被動偵測需要的最少微動量 */
@@ -57,12 +59,12 @@ const THRESHOLDS = {
  * 供 structuralId.ts 的 build3DModel() 建立精確的 3D 骨骼模型
  */
 export class ActiveLivenessDetector {
-  // v20.13 五階段（取代舊「+字掃描」狀態機）：
-  //   blink → turn_left → turn_right → turn_up → turn_down
-  // 每階段獨立 8s timeout（ACTIVE_CHALLENGE_TIMEOUT）。
-  // 階段完成判定改用「zone-coverage」— useFaceRecognition 收滿該方向的 yaw zone 後
-  // 呼叫 markCurrentChallengeDone() 推進。**不**再用 noseOffsetX threshold。
-  private challenges: LivenessChallenge[] = ['blink', 'turn_left', 'turn_right', 'turn_up', 'turn_down'];
+  // v20.13b 兩階段 challenge + free-order turn 偵測：
+  //   blink (8s timeout) → turn_head (30s timeout, 4 directions free-order)
+  // turn_head 完成判定：4 個方向（左/右/上/下）的 yaw/pitch zone 都被收滿（任意順序）。
+  // UI prompt 依「下一個未完成」順序顯示（左 → 右 → 上 → 下），但實際完成順序自由。
+  // 為什麼 free-order：用戶轉頭順序不一定，影片時序也不固定 — 偵測到實際轉到位才算數。
+  private challenges: LivenessChallenge[] = ['blink', 'turn_head'];
   private currentIndex = 0;
   private challengeStartTime = 0;
   private completed: Map<LivenessChallenge, LivenessChallengeStatus> = new Map();
@@ -75,8 +77,8 @@ export class ActiveLivenessDetector {
   private opennessBaselineReady = false;
   /** 由 useFaceRecognition 每幀注入：當前的眼部 pixel 睜眼度（avg of L/R） */
   private latestOpenness = 1;
-  /** 由 useFaceRecognition 在 zone 收滿時呼叫，標記當前 turn 階段完成 */
-  private currentTurnDone = false;
+  /** turn_head 4 個方向命中狀態，free-order。由 useFaceRecognition 在 zone 收滿時呼叫 markTurnDirection 設定 */
+  private turnHits = { left: false, right: false, up: false, down: false };
   /** Phase 26b: 挑戰期間 embedding 快照 */
   private snapshots: ChallengeEmbeddingSnapshot[] = [];
   /** 遮擋挑戰是否已注入（防止重複注入） */
@@ -90,7 +92,7 @@ export class ActiveLivenessDetector {
 
   /** 重置偵測器 */
   reset(): void {
-    this.challenges = ['blink', 'turn_left', 'turn_right', 'turn_up', 'turn_down'];
+    this.challenges = ['blink', 'turn_head'];
     this.currentIndex = 0;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
@@ -99,15 +101,12 @@ export class ActiveLivenessDetector {
     this.opennessBaselineReady = false;
     this.latestOpenness = 1;
     this._lastEarLog = 0;
-    this.currentTurnDone = false;
+    this.turnHits = { left: false, right: false, up: false, down: false };
     this.snapshots = [];
     this.occlusionInjected = false;
     this.completed = new Map([
       ['blink', 'waiting'],
-      ['turn_left', 'waiting'],
-      ['turn_right', 'waiting'],
-      ['turn_up', 'waiting'],
-      ['turn_down', 'waiting'],
+      ['turn_head', 'waiting'],
     ]);
   }
 
@@ -190,26 +189,37 @@ export class ActiveLivenessDetector {
     return { current: this.currentIndex, total: this.challenges.length };
   }
 
-  /** v20.13 取得當前 turn 階段命中狀態（給 UI 進度顯示用 — 取代舊 +字 scanHits）
-   *  phase 對映：blink→'yaw'、turn_left→'yaw'、turn_right→'yaw'、turn_up→'pitch'、turn_down→'pitch'、其他→'final_center' */
+  /** turn_head 4 方向命中狀態（給 UI 進度顯示用） */
   getScanHits(): { right: boolean; left: boolean; up: boolean; down: boolean; phase: 'yaw' | 'pitch' | 'final_center' } {
-    const cur = this.getCurrentChallenge();
-    const completed = (c: LivenessChallenge) => this.completed.get(c) === 'detected';
+    // phase 依 UI 顯示「下一個未完成方向」決定：左/右 → yaw, 上/下 → pitch
+    const next = this.getNextPendingTurnDirection();
     let phase: 'yaw' | 'pitch' | 'final_center' = 'yaw';
-    if (cur === 'turn_up' || cur === 'turn_down') phase = 'pitch';
-    else if (cur === null) phase = 'final_center';
+    if (next === 'up' || next === 'down') phase = 'pitch';
+    else if (next === null) phase = 'final_center';
     return {
-      left: completed('turn_left'),
-      right: completed('turn_right'),
-      up: completed('turn_up'),
-      down: completed('turn_down'),
+      left: this.turnHits.left,
+      right: this.turnHits.right,
+      up: this.turnHits.up,
+      down: this.turnHits.down,
       phase,
     };
   }
 
-  /** 由 useFaceRecognition 在「當前 turn 階段的 zone 收滿目標幀」時呼叫，標記階段完成 */
-  markCurrentTurnDone(): void {
-    this.currentTurnDone = true;
+  /** 由 useFaceRecognition 在「該方向 zone 收滿」時呼叫，標記該方向完成（free-order） */
+  markTurnDirection(direction: 'left' | 'right' | 'up' | 'down'): void {
+    if (!this.turnHits[direction]) {
+      this.turnHits[direction] = true;
+      console.error(`[Liveness] Turn ${direction} detected (free-order)`);
+    }
+  }
+
+  /** UI 用：取得下一個未完成方向（依序：左 → 右 → 上 → 下） */
+  getNextPendingTurnDirection(): 'left' | 'right' | 'up' | 'down' | null {
+    if (!this.turnHits.left) return 'left';
+    if (!this.turnHits.right) return 'right';
+    if (!this.turnHits.up) return 'up';
+    if (!this.turnHits.down) return 'down';
+    return null;
   }
 
   /**
@@ -220,8 +230,12 @@ export class ActiveLivenessDetector {
     const challenge = this.getCurrentChallenge();
     if (!challenge) return true; // 全部完成
 
-    // 檢查超時
-    if (Date.now() - this.challengeStartTime > THRESHOLDS.ACTIVE_CHALLENGE_TIMEOUT) {
+    // 檢查超時（per-challenge）
+    const timeoutMs = challenge === 'blink' ? THRESHOLDS.BLINK_TIMEOUT
+      : (challenge === 'turn_head' || challenge === 'turn_left' || challenge === 'turn_right' || challenge === 'turn_up' || challenge === 'turn_down')
+        ? THRESHOLDS.TURN_HEAD_TIMEOUT
+        : THRESHOLDS.ACTIVE_CHALLENGE_TIMEOUT;
+    if (Date.now() - this.challengeStartTime > timeoutMs) {
       devLog('[Liveness] Challenge timeout:', challenge);
       this.completed.set(challenge, 'timeout');
       return false; // 超時失敗
@@ -294,16 +308,16 @@ export class ActiveLivenessDetector {
         break;
       }
 
-      case 'turn_head':       // 舊型 (留作 backward compat，不會被新 challenges list 觸發)
-      case 'turn_right':
+      case 'turn_head':
+      case 'turn_right':       // 舊型 backward compat
       case 'turn_left':
       case 'turn_up':
       case 'turn_down': {
-        // v20.13 分階段：完成判定改由 useFaceRecognition 收滿該方向 zone 後呼叫
-        // markCurrentTurnDone() 設定 currentTurnDone=true 推進。**不**再用 noseOffsetX threshold。
-        // Stage timeout (8s) 由 processFrame 開頭的通用 timeout 檢查負責 → 自動 fail。
-        if (this.currentTurnDone) {
-          console.error(`[Liveness] ${challenge} complete (zone target reached)`);
+        // v20.13b free-order：4 個方向（左/右/上/下）各自由 useFaceRecognition 在 zone
+        // 收滿時呼叫 markTurnDirection('left'/'right'/'up'/'down') 設定。
+        // 全部 4 個 hit → challenge 完成。順序自由（影片時序/用戶習慣不固定）。
+        if (this.turnHits.left && this.turnHits.right && this.turnHits.up && this.turnHits.down) {
+          console.error('[Liveness] Turn challenge complete — all 4 directions hit');
           this.completed.set(challenge, 'detected');
           this.advanceChallenge();
         }
@@ -319,7 +333,7 @@ export class ActiveLivenessDetector {
     this.currentIndex++;
     this.challengeStartTime = Date.now();  // ← 每階段獨立 timeout 計時
     this.wasEyesClosed = false;
-    this.currentTurnDone = false;          // ← 重置 zone-coverage 旗標供下一階段
+    // turnHits 不重置 — free-order 模式下偵測到的方向跨 challenge 持續累積
   }
 
   // =========================================================================

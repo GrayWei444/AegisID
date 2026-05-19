@@ -146,6 +146,8 @@ interface UseFaceRecognitionReturn {
   status: FaceDetectionStatus;
   /** 目前活體挑戰（僅 register 模式） */
   currentChallenge: LivenessChallenge | null;
+  /** v20.13b turn_head 階段下一個未完成的方向（UI prompt 用） */
+  nextTurnDirection: 'left' | 'right' | 'up' | 'down' | null;
   /** 活體挑戰進度 */
   challengeProgress: { current: number; total: number };
   /** 活體偵測結果 */
@@ -203,6 +205,7 @@ export function useFaceRecognition({
 }: UseFaceRecognitionOptions): UseFaceRecognitionReturn {
   const [status, setStatus] = useState<FaceDetectionStatus>('idle');
   const [currentChallenge, setCurrentChallenge] = useState<LivenessChallenge | null>(null);
+  const [nextTurnDirection, setNextTurnDirection] = useState<'left' | 'right' | 'up' | 'down' | null>(null);
   const [challengeProgress, setChallengeProgress] = useState({ current: 0, total: 2 });
   const [livenessResult, setLivenessResult] = useState<LivenessResult | null>(null);
   const [similarity, setSimilarity] = useState<number | null>(null);
@@ -652,68 +655,71 @@ export function useFaceRecognition({
 
     const challenge = detector.getCurrentChallenge();
 
-    // v20.13 分階段收幀（取代 +字掃描）：blink → turn_left → turn_right → turn_up → turn_down
-    // 每階段收滿對應 zone target → 呼叫 detector.markCurrentTurnDone() 推進到下個階段。
-    // 完成條件用 detection.yaw（3D 旋轉角度，跨眼鏡用戶穩定），不再用 noseOffsetX threshold。
-    const isTurnStage = challenge === 'turn_left' || challenge === 'turn_right'
-      || challenge === 'turn_up' || challenge === 'turn_down'
-      || challenge === 'turn_head';   // turn_head backward compat（新流程不會出現）
-    if (isTurnStage) {
+    // v20.13b free-order turn 偵測：單一 'turn_head' challenge，4 個方向（左/右/上/下）獨立追蹤。
+    // 每幀依 yaw 收進 yaw zone、依 pitch 收進 pitch zone。任一方向 zone 收滿 → 標記該方向 done。
+    // 4 方向都 done → challenge 完成。順序自由（影片/用戶轉哪邊先都行）。
+    // UI 顯示「下一個未完成方向」（依序：左 → 右 → 上 → 下）— 真實用戶看 prompt 配合即可。
+    if (challenge === 'turn_head' || challenge === 'turn_left' || challenge === 'turn_right'
+        || challenge === 'turn_up' || challenge === 'turn_down') {
       const yaw = detection.yaw ?? 0;
-      // pitch proxy: noseOffsetY 反向（noseY<0 = 抬頭/向上）
-      const pitch = -(geometry.noseOffsetY ?? 0);
+      const pitch = -(geometry.noseOffsetY ?? 0);  // pitch proxy: noseY<0 = 抬頭
       setCurrentYaw(yaw);
 
-      // 依當前 turn 階段選擇收 yaw 或 pitch zone
-      const isPitchStage = challenge === 'turn_up' || challenge === 'turn_down';
-
-      if (isPitchStage) {
-        const pzone = getPitchZone(pitch);
-        const pcount = pitchZoneCountsRef.current[pzone];
-        const ptarget = PITCH_ZONES[pzone].target;
-        if (ptarget > 0 && pcount < ptarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
-          const frame: CapturedFrame = {
-            landmarks: detection.landmarks as unknown as Landmark3D[],
-            matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
-            yaw,
-          };
-          capturedFramesRef.current.push(frame);
-          pitchZoneCountsRef.current[pzone]++;
-          lastCaptureMsRef.current = now;
-        }
-      } else {
-        const zone = getYawZone(yaw);
-        const zoneCount = zoneCountsRef.current[zone];
-        const zoneTarget = YAW_ZONES[zone].target;
-        if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
-          const frame: CapturedFrame = {
-            landmarks: detection.landmarks as unknown as Landmark3D[],
-            matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
-            yaw,
-          };
-          capturedFramesRef.current.push(frame);
-          zoneCountsRef.current[zone]++;
-          lastCaptureMsRef.current = now;
-        }
+      // 收 yaw zone（每幀）
+      const zone = getYawZone(yaw);
+      const zoneCount = zoneCountsRef.current[zone];
+      const zoneTarget = YAW_ZONES[zone].target;
+      if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+        capturedFramesRef.current.push({
+          landmarks: detection.landmarks as unknown as Landmark3D[],
+          matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+          yaw,
+        });
+        zoneCountsRef.current[zone]++;
+        lastCaptureMsRef.current = now;
       }
 
-      // 檢查當前 turn 階段是否該推進（zone 目標達標 → detector.markCurrentTurnDone）
-      // 條件：**極端 zone 收滿** (far-*)，代表 user 真的轉到位 — 給 3D 骨骼計算最重要的角度。
-      // 中間 zone (left/right/up/down) 在過渡時自然會收，不強求單一 zone 滿；
-      // 用 sum 寬鬆條件 ≥ 極端 zone 一半當保險（轉得稍微淺也算完成，不卡住）
+      // 收 pitch zone（同幀也可同時更新 — 抬/低頭的 yaw 通常在 center 範圍）
+      const pzone = getPitchZone(pitch);
+      const pcount = pitchZoneCountsRef.current[pzone];
+      const ptarget = PITCH_ZONES[pzone].target;
+      if (ptarget > 0 && pcount < ptarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+        capturedFramesRef.current.push({
+          landmarks: detection.landmarks as unknown as Landmark3D[],
+          matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
+          yaw,
+        });
+        pitchZoneCountsRef.current[pzone]++;
+        lastCaptureMsRef.current = now;
+      }
+
+      // 檢查 4 個方向（free-order）
+      // 直接以 「當前幀 yaw/pitch 超過 threshold」當 hit 信號 — MediaPipe 在 90° 全側臉
+      // 常 confidence < 0.5 直接 drop 整幀，只要有一幀偵測到強轉就算數，不靠 zone 累積。
+      // Thresholds 比 zone min 寬鬆（zone[1] 起點是 0.08），這裡用 0.12 確保是「明顯轉了」。
+      const TURN_YAW_THRESHOLD = 0.08;
+      const TURN_PITCH_THRESHOLD = 0.08;
       const z = zoneCountsRef.current;
       const pz = pitchZoneCountsRef.current;
-      const leftHit  = z[0] >= YAW_ZONES[0].target   || (z[0] + z[1]) >= YAW_ZONES[0].target + Math.ceil(YAW_ZONES[1].target / 2);
-      const rightHit = z[4] >= YAW_ZONES[4].target   || (z[3] + z[4]) >= YAW_ZONES[4].target + Math.ceil(YAW_ZONES[3].target / 2);
-      const upHit    = pz[0] >= PITCH_ZONES[0].target || (pz[0] + pz[1]) >= PITCH_ZONES[0].target + Math.ceil(PITCH_ZONES[1].target / 2);
-      const downHit  = pz[4] >= PITCH_ZONES[4].target || (pz[3] + pz[4]) >= PITCH_ZONES[4].target + Math.ceil(PITCH_ZONES[3].target / 2);
+      if (yaw >= TURN_YAW_THRESHOLD || (z[0] + z[1]) >= 1)   detector.markTurnDirection('left');
+      if (yaw <= -TURN_YAW_THRESHOLD || (z[3] + z[4]) >= 1)  detector.markTurnDirection('right');
+      if (pitch >= TURN_PITCH_THRESHOLD || (pz[0] + pz[1]) >= 1) detector.markTurnDirection('up');
+      if (pitch <= -TURN_PITCH_THRESHOLD || (pz[3] + pz[4]) >= 1) detector.markTurnDirection('down');
 
-      if (challenge === 'turn_left'  && leftHit)  detector.markCurrentTurnDone();
-      if (challenge === 'turn_right' && rightHit) detector.markCurrentTurnDone();
-      if (challenge === 'turn_up'    && upHit)    detector.markCurrentTurnDone();
-      if (challenge === 'turn_down'  && downHit)  detector.markCurrentTurnDone();
+      // Debug zone 分布（AEGIS_EAR_DUMP 時印），每秒至多一次
+      try {
+        if (typeof localStorage !== 'undefined' && localStorage.getItem('AEGIS_EAR_DUMP') === 'true') {
+          const nowMs = Date.now();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const w = window as any;
+          if (!w.__lastZoneLog || nowMs - w.__lastZoneLog > 1000) {
+            w.__lastZoneLog = nowMs;
+            console.error(`[FaceRec] zone yaw=[fl:${z[0]}/${YAW_ZONES[0].target} l:${z[1]}/${YAW_ZONES[1].target} c:${z[2]}/${YAW_ZONES[2].target} r:${z[3]}/${YAW_ZONES[3].target} fr:${z[4]}/${YAW_ZONES[4].target}] pitch=[fu:${pz[0]}/${PITCH_ZONES[0].target} u:${pz[1]}/${PITCH_ZONES[1].target} d:${pz[3]}/${PITCH_ZONES[3].target} fd:${pz[4]}/${PITCH_ZONES[4].target}] yaw=${yaw.toFixed(2)} pitch=${pitch.toFixed(2)}`);
+          }
+        }
+      } catch { /* */ }
 
-      // UI zone 進度（合併三組顯示）
+      // UI zone 進度
       const merged = {
         left: z[0] + z[1],
         center: z[2],
@@ -721,14 +727,16 @@ export function useFaceRecognition({
       };
       setScanZones({ ...merged });
 
-      // UI 引導：依當前 challenge 設 scanPhase
+      // UI 引導 phase：依下一個未完成方向決定 prompt
+      const next = detector.getNextPendingTurnDirection();
+      setNextTurnDirection(next);
       const phaseMap: Record<string, 'center' | 'right' | 'left' | 'complete'> = {
-        turn_left: 'left',
-        turn_right: 'right',
-        turn_up: 'right',    // 沒有對應的 up/down phase enum；映射到 right 暫不影響邏輯
-        turn_down: 'left',
+        left: 'left',
+        right: 'right',
+        up: 'center',     // 沒有 up phase；用 center 引導 user 抬/低頭時保持中心 yaw
+        down: 'center',
       };
-      setScanPhase(phaseMap[challenge] ?? 'complete');
+      setScanPhase(next ? phaseMap[next] ?? 'complete' : 'complete');
     }
 
     // v20.3: 把 +字 scanHits 同步到 state（給 PlusProgressBar 顯示）
@@ -1087,6 +1095,7 @@ export function useFaceRecognition({
   return {
     status,
     currentChallenge,
+    nextTurnDirection,
     challengeProgress,
     livenessResult,
     similarity,
