@@ -56,9 +56,13 @@ function buildOptions(delegate: 'GPU' | 'CPU'): FaceLandmarkerOptions {
     },
     runningMode: 'IMAGE',
     numFaces: 1,
-    minFaceDetectionConfidence: 0.5,
-    minFacePresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
+    // v20.13c: 0.5 → 0.3 — 全側臉 (90° profile) MediaPipe confidence 常掉到 0.4 區，
+    // 整個 drop face → 收不到 yaw → turn_left 永遠不會被偵測到。
+    // 降到 0.3 接受 partial-profile landmarks，雖然個別 landmark 精度略低，
+    // 但 yaw 計算用兩眼+鼻尖三個強特徵，足以判斷大致轉頭方向。
+    minFaceDetectionConfidence: 0.3,
+    minFacePresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3,
     outputFaceBlendshapes: true,
     // 關掉 transformation matrix — face_geometry calculator 在部分 Android GPU
     // 上 design_matrix.norm()=0 → procrustes solver 崩潰整個 graph throw exception。
@@ -241,15 +245,29 @@ export function detectFace(
     }
   }
 
-  // Yaw 用 landmark 幾何計算（與測試工具一致，比 rotation matrix 更穩定）
-  // yaw = (nose.x - eyeMidX) / eyeSpan
-  const leX = (landmarks[33].x + landmarks[133].x) / 2;
-  const reX = (landmarks[263].x + landmarks[362].x) / 2;
-  const eyeMidX = (leX + reX) / 2;
-  const eyeSpan = Math.abs(reX - leX);
-  const yaw = eyeSpan > 0.01
-    ? (landmarks[1].x - eyeMidX) / eyeSpan
-    : 0;
+  // v20.13d: yaw 改用 face width 當除數（取代 eyeSpan）— 跟 noseOffsetX 算法一致
+  //
+  // 為什麼換：實測 MediaPipe 對左右 profile 的 eyeSpan 估計不對稱 —
+  //   LEFT 全側臉時兩眼 landmark 被擠成 eyeSpan=0.05（除小值 yaw 爆到 2.0）
+  //   RIGHT 全側臉時 eyeSpan 保持 0.16（yaw 被壓到 0.7）
+  // → 同樣轉頭幅度 yaw 差 3 倍，演算法判定卡關。
+  //
+  // Face width (FACE_LEFT 234 ↔ FACE_RIGHT 454) 在 profile 時 MediaPipe 仍給
+  // 對稱估計（face mesh 完整 3D model 含遮擋側 landmark）→ yaw 對稱。
+  const faceLeftX = landmarks[234].x;
+  const faceRightX = landmarks[454].x;
+  const faceCenterX = (faceLeftX + faceRightX) / 2;
+  const faceWidth = Math.abs(faceRightX - faceLeftX);
+  const noseX = landmarks[1].x;
+  const noseRel = noseX - faceCenterX;
+  const yaw = faceWidth > 0.01 ? noseRel / faceWidth : 0;
+
+  // DIAG: 印出 yaw 中間值，用於診斷左右對稱性（AEGIS_YAW_DUMP localStorage 開啟）
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('AEGIS_YAW_DUMP') === 'true' && Math.abs(yaw) > 0.10) {
+      console.error(`[YawDiag] yaw=${yaw.toFixed(3)} noseRel=${noseRel.toFixed(4)} faceWidth=${faceWidth.toFixed(4)} faceLeftX=${faceLeftX.toFixed(4)} faceRightX=${faceRightX.toFixed(4)} faceCenterX=${faceCenterX.toFixed(4)} noseX=${noseX.toFixed(4)}`);
+    }
+  } catch { /* SSR */ }
 
   return { landmarks, matrix, yaw, blendshapes };
 }

@@ -34,7 +34,7 @@ const THRESHOLDS = {
    *  blink → 8s, turn_head → 30s（4 個方向 free-order 偵測，總時間預算） */
   ACTIVE_CHALLENGE_TIMEOUT: 30000,
   BLINK_TIMEOUT: 8000,
-  TURN_HEAD_TIMEOUT: 45000,
+  TURN_HEAD_TIMEOUT: 30000,
   /** 被動偵測需要的最少眨眼次數 */
   PASSIVE_MIN_BLINKS: 1,
   /** 被動偵測需要的最少微動量 */
@@ -92,7 +92,16 @@ export class ActiveLivenessDetector {
 
   /** 重置偵測器 */
   reset(): void {
-    this.challenges = ['blink', 'turn_head'];
+    // 預設兩階段。E2E 可透過 localStorage.AEGIS_E2E_FACE_PHASE 設定單階段測試：
+    //   'blink-only' → 只跑 blink（用 face-blink.y4m 測 blink 演算法）
+    //   'turn-only'  → 只跑 turn（用 face-turn.y4m 測 turn 演算法）
+    //   未設或 'all'  → 兩階段都跑（正式登入流程）
+    // 真實用戶不會設這 flag，所以 prod 永遠是兩階段。
+    let phase: string | null = null;
+    try { phase = typeof localStorage !== 'undefined' ? localStorage.getItem('AEGIS_E2E_FACE_PHASE') : null; } catch { /* SSR */ }
+    if (phase === 'blink-only') this.challenges = ['blink'];
+    else if (phase === 'turn-only') this.challenges = ['turn_head'];
+    else this.challenges = ['blink', 'turn_head'];
     this.currentIndex = 0;
     this.challengeStartTime = Date.now();
     this.wasEyesClosed = false;
@@ -104,10 +113,7 @@ export class ActiveLivenessDetector {
     this.turnHits = { left: false, right: false, up: false, down: false };
     this.snapshots = [];
     this.occlusionInjected = false;
-    this.completed = new Map([
-      ['blink', 'waiting'],
-      ['turn_head', 'waiting'],
-    ]);
+    this.completed = new Map(this.challenges.map(c => [c, 'waiting' as LivenessChallengeStatus]));
   }
 
   /** 設定遮擋偵測函式（由 hook 注入） */

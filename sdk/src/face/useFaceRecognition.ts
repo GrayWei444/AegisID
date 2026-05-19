@@ -655,10 +655,7 @@ export function useFaceRecognition({
 
     const challenge = detector.getCurrentChallenge();
 
-    // v20.13b free-order turn 偵測：單一 'turn_head' challenge，4 個方向（左/右/上/下）獨立追蹤。
-    // 每幀依 yaw 收進 yaw zone、依 pitch 收進 pitch zone。任一方向 zone 收滿 → 標記該方向 done。
-    // 4 方向都 done → challenge 完成。順序自由（影片/用戶轉哪邊先都行）。
-    // UI 顯示「下一個未完成方向」（依序：左 → 右 → 上 → 下）— 真實用戶看 prompt 配合即可。
+    // v20.13b free-order turn 偵測：'turn_head' challenge 4 方向獨立追蹤，順序自由完成
     if (challenge === 'turn_head' || challenge === 'turn_left' || challenge === 'turn_right'
         || challenge === 'turn_up' || challenge === 'turn_down') {
       const yaw = detection.yaw ?? 0;
@@ -694,17 +691,17 @@ export function useFaceRecognition({
       }
 
       // 檢查 4 個方向（free-order）
-      // 直接以 「當前幀 yaw/pitch 超過 threshold」當 hit 信號 — MediaPipe 在 90° 全側臉
-      // 常 confidence < 0.5 直接 drop 整幀，只要有一幀偵測到強轉就算數，不靠 zone 累積。
-      // Thresholds 比 zone min 寬鬆（zone[1] 起點是 0.08），這裡用 0.12 確保是「明顯轉了」。
-      const TURN_YAW_THRESHOLD = 0.08;
-      const TURN_PITCH_THRESHOLD = 0.08;
+      // 閾值要明顯高於 noise（典型 noise ±0.05）— 用 0.20/0.10 確保是「真的轉到位」。
+      // yaw 範圍大（90° profile 可到 0.50-0.85+），threshold 0.20 = ~35-45° 半轉
+      // pitch 範圍較窄（抬/低頭 nose Y 偏移 / face height），threshold 0.10 = ~25-35° tilt
+      const TURN_YAW_THRESHOLD = 0.20;   // v20.13d: faceWidth-based yaw 範圍 ±1.2-1.6 peak（對稱），noise <0.10
+      const TURN_PITCH_THRESHOLD = 0.10;
+      if (yaw >=  TURN_YAW_THRESHOLD)    detector.markTurnDirection('left');
+      if (yaw <= -TURN_YAW_THRESHOLD)    detector.markTurnDirection('right');
+      if (pitch >=  TURN_PITCH_THRESHOLD) detector.markTurnDirection('up');
+      if (pitch <= -TURN_PITCH_THRESHOLD) detector.markTurnDirection('down');
       const z = zoneCountsRef.current;
       const pz = pitchZoneCountsRef.current;
-      if (yaw >= TURN_YAW_THRESHOLD || (z[0] + z[1]) >= 1)   detector.markTurnDirection('left');
-      if (yaw <= -TURN_YAW_THRESHOLD || (z[3] + z[4]) >= 1)  detector.markTurnDirection('right');
-      if (pitch >= TURN_PITCH_THRESHOLD || (pz[0] + pz[1]) >= 1) detector.markTurnDirection('up');
-      if (pitch <= -TURN_PITCH_THRESHOLD || (pz[3] + pz[4]) >= 1) detector.markTurnDirection('down');
 
       // Debug zone 分布（AEGIS_EAR_DUMP 時印），每秒至多一次
       try {
