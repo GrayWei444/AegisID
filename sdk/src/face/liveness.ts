@@ -34,7 +34,10 @@ const THRESHOLDS = {
    *  blink → 8s, turn_head → 30s（4 個方向 free-order 偵測，總時間預算） */
   ACTIVE_CHALLENGE_TIMEOUT: 30000,
   BLINK_TIMEOUT: 8000,
-  TURN_HEAD_TIMEOUT: 30000,
+  // turn_head：4 方向 free-order，每方向需收滿 TURN_DONE_FRAMES 幀。抬/低頭動作短，
+  //   慢速使用者（含長者被守護者）或低 fps 裝置可能需要轉第二輪才收滿 pitch 方向。
+  //   30s→60s 給足時間，不放寬收幀門檻（仍要 4 幀/方向），不削弱活體驗證。
+  TURN_HEAD_TIMEOUT: 60000,
   /** 被動偵測需要的最少眨眼次數 */
   PASSIVE_MIN_BLINKS: 1,
   /** 被動偵測需要的最少微動量 */
