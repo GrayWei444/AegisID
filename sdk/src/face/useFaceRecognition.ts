@@ -73,29 +73,49 @@ const MIN_VERIFY_FRAMES = 5;
 // 200ms = 5fps detection. 100ms 在 Android Chrome 會 GPU pipeline backlog 卡死。
 // 5fps 對眨眼/轉頭活體偵測足夠（眨眼動作 100-300ms，轉頭數秒）。
 const DETECTION_INTERVAL = 200;
+/** v20.14: detection throttle in **video time** (seconds).
+ *  detection loop 改 requestVideoFrameCallback 逐 video frame 觸發，
+ *  用 mediaTime (video timestamp) throttle → 同影片每次跑取到完全相同的 video frame 序列
+ *  → 收到完全相同 frame 集合 → hash2D + hash3D 都 deterministic。
+ *  真實 camera: mediaTime ≈ wall clock，行為不變（每 200ms detect 一次）。 */
+const DETECTION_INTERVAL_SEC = 0.2;
 
 /** 註冊模式：同 zone 最小擷取間隔 (ms)，避免同角度過多重複幀 */
 const REGISTER_CAPTURE_INTERVAL = 120;
+/** Capture throttle in **video time** (seconds), not wall clock.
+ *  真實 camera: video.currentTime ≈ wall clock，行為不變
+ *  fake camera: video time deterministic on video content → 同影片跨次跑同 frame 集合 */
+const REGISTER_CAPTURE_INTERVAL_SEC = 0.12;
+/** v20.14: 每方向 done 需累積的 frames 數量
+ *  - 對應 v15 「累積足夠 frames」設計
+ *  - 不分淺/深 zone，該方向總和 ≥ N 即算轉到位
+ *  - 真實 user 持續轉到 prompt 提示「下一個方向」即可
+ *  - fake camera：影片中 user 在某方向停留時間 / capture interval = 累積 frames */
+const TURN_DONE_FRAMES = 4;
 
 /**
- * Yaw zone 定義（與測試工具一致）
- * 確保左/中/右角度均勻分佈
+ * Yaw zone 定義
+ * v20.14: 擴大 far-* 邊界涵蓋 v20.13d faceWidth-based yaw 範圍（peak 1.6+）。
+ *   原 max=0.50 / min=-0.50 切點是 v17 eyeSpan-based yaw 範圍下的設計，
+ *   v20.13d yaw 公式改 faceWidth 後 peak 1.2-1.6，深側臉幀會 fallback 回 center →
+ *   far-left/far-right zone 永遠收不到深側臉。改 10 / -10 確保深側臉都進對應 zone。
  */
 const YAW_ZONES = [
-  { min: 0.20, max: 0.50, target: 4 },   // far-left
-  { min: 0.08, max: 0.20, target: 4 },   // left
-  { min: -0.08, max: 0.08, target: 6 },  // center
+  { min: 0.20, max: 10, target: 4 },   // far-left（v20.14 max 0.50→10）
+  { min: 0.08, max: 0.20, target: 4 }, // left
+  { min: -0.08, max: 0.08, target: 6 }, // center
   { min: -0.20, max: -0.08, target: 4 }, // right
-  { min: -0.50, max: -0.20, target: 4 }, // far-right
+  { min: -10, max: -0.20, target: 4 }, // far-right（v20.14 min -0.50→-10）
 ] as const;
 
 // v20.7: pitch zones — 上下也收幀（增加 3D triangulation 多樣性）
+// v20.14: 同樣擴大 far-* 邊界 + 統一 target=4 (跟 TURN_DONE_FRAMES 對齊)
 const PITCH_ZONES = [
-  { min: 0.18, max: 0.50, target: 4 },   // far-up
-  { min: 0.08, max: 0.18, target: 3 },   // up
-  { min: -0.08, max: 0.08, target: 0 },  // center pitch (yaw 已收，不重複)
-  { min: -0.18, max: -0.08, target: 3 }, // down
-  { min: -0.50, max: -0.18, target: 4 }, // far-down
+  { min: 0.18, max: 10, target: 4 },   // far-up
+  { min: 0.08, max: 0.18, target: 4 }, // up (3→4: 對齊 TURN_DONE_FRAMES)
+  { min: -0.08, max: 0.08, target: 0 }, // center pitch
+  { min: -0.18, max: -0.08, target: 4 }, // down (3→4)
+  { min: -10, max: -0.18, target: 4 }, // far-down
 ] as const;
 
 function getYawZone(yaw: number): number {
@@ -236,6 +256,10 @@ export function useFaceRecognition({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number>(0);
+  /** v20.14: requestVideoFrameCallback handle（用於 stopCamera cancel） */
+  const rvfcHandleRef = useRef<number>(0);
+  /** v20.14: detection throttle 用 video time（mediaTime），deterministic on video content */
+  const lastDetectVideoTimeRef = useRef<number>(0);
   const activeDetectorRef = useRef<ActiveLivenessDetector | null>(null);
   const passiveDetectorRef = useRef<PassiveLivenessDetector | null>(null);
   const isRunningRef = useRef(false);
@@ -251,6 +275,8 @@ export function useFaceRecognition({
   // v20.7: pitch zone 計數（搭配 PITCH_ZONES）
   const pitchZoneCountsRef = useRef<number[]>([0, 0, 0, 0, 0]);
   const lastCaptureMsRef = useRef(0);
+  /** v20.14: video.currentTime-based capture throttle (取代 wall clock) */
+  const lastCaptureVideoTimeRef = useRef(0);
 
   // Anti-spoof 相關 refs
   const lastCnnTimestampRef = useRef(0);
@@ -448,6 +474,13 @@ export function useFaceRecognition({
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = 0;
     }
+    // v20.14: cancel requestVideoFrameCallback
+    if (rvfcHandleRef.current && videoRef.current && 'cancelVideoFrameCallback' in videoRef.current) {
+      (videoRef.current as HTMLVideoElement & { cancelVideoFrameCallback: (h: number) => void })
+        .cancelVideoFrameCallback(rvfcHandleRef.current);
+      rvfcHandleRef.current = 0;
+    }
+    lastDetectVideoTimeRef.current = 0;
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
@@ -466,21 +499,37 @@ export function useFaceRecognition({
   // =========================================================================
 
   const startDetectionLoop = useCallback(() => {
-    const loop = () => {
+    // v20.14: 排程下一幀 — 優先 requestVideoFrameCallback（逐 video frame 觸發，
+    //   throttle 用 video time → fake camera deterministic），fallback requestAnimationFrame
+    const scheduleNext = () => {
+      const v = videoRef.current;
+      if (v && 'requestVideoFrameCallback' in v) {
+        rvfcHandleRef.current = (v as HTMLVideoElement & {
+          requestVideoFrameCallback: (cb: (now: number, metadata: { mediaTime: number }) => void) => number;
+        }).requestVideoFrameCallback((_now, metadata) => loop(metadata.mediaTime));
+      } else {
+        animFrameRef.current = requestAnimationFrame(() => loop(undefined));
+      }
+    };
+
+    const loop = (mediaTime: number | undefined) => {
       if (!isRunningRef.current) return;
 
       const video = videoRef.current;
       if (!video || video.readyState < 2) {
-        animFrameRef.current = requestAnimationFrame(loop);
+        scheduleNext();
         return;
       }
 
-      const now = performance.now();
-      if (now - lastTimestampRef.current < DETECTION_INTERVAL) {
-        animFrameRef.current = requestAnimationFrame(loop);
+      const now = performance.now();  // wall clock — 給 MediaPipe timestamp + spoof capture
+      // v20.14: detection throttle 用 video time（deterministic on video content）
+      const vTime = mediaTime ?? video.currentTime;
+      if (lastDetectVideoTimeRef.current !== 0 &&
+          vTime - lastDetectVideoTimeRef.current < DETECTION_INTERVAL_SEC) {
+        scheduleNext();
         return;
       }
-      lastTimestampRef.current = now;
+      lastDetectVideoTimeRef.current = vTime;
 
       // 偵測人臉（返回 landmarks + matrix + yaw）
       const detection = detectFace(video, now);
@@ -499,7 +548,7 @@ export function useFaceRecognition({
             statusRef.current !== 'ready' && statusRef.current !== 'loading') {
           setStatusAndRef('ready');
         }
-        animFrameRef.current = requestAnimationFrame(loop);
+        scheduleNext();
         return;
       }
 
@@ -535,10 +584,10 @@ export function useFaceRecognition({
         handleVerifyFrame(video, detection, geometry, now);
       }
 
-      animFrameRef.current = requestAnimationFrame(loop);
+      scheduleNext();
     };
 
-    animFrameRef.current = requestAnimationFrame(loop);
+    scheduleNext();
   }, [mode, setStatusAndRef]);
 
   // =========================================================================
@@ -662,46 +711,58 @@ export function useFaceRecognition({
       const pitch = -(geometry.noseOffsetY ?? 0);  // pitch proxy: noseY<0 = 抬頭
       setCurrentYaw(yaw);
 
+      // Capture throttle：用 video.currentTime（不是 wall clock）
+      //   真實 camera：video.currentTime ≈ wall clock，行為不變
+      //   fake camera：video time deterministic on video content → 同影片跨次跑收同 frame 集合
+      // 單位：秒；120ms = 0.12s
+      const videoTime = video.currentTime;
+      const elapsedVideo = videoTime - lastCaptureVideoTimeRef.current;
+      const intervalMet = elapsedVideo >= REGISTER_CAPTURE_INTERVAL_SEC || lastCaptureVideoTimeRef.current === 0;
+
       // 收 yaw zone（每幀）
       const zone = getYawZone(yaw);
       const zoneCount = zoneCountsRef.current[zone];
       const zoneTarget = YAW_ZONES[zone].target;
-      if (zoneCount < zoneTarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+      if (zoneCount < zoneTarget && intervalMet) {
         capturedFramesRef.current.push({
           landmarks: detection.landmarks as unknown as Landmark3D[],
           matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
           yaw,
         });
         zoneCountsRef.current[zone]++;
-        lastCaptureMsRef.current = now;
+        lastCaptureVideoTimeRef.current = videoTime;
       }
 
       // 收 pitch zone（同幀也可同時更新 — 抬/低頭的 yaw 通常在 center 範圍）
       const pzone = getPitchZone(pitch);
       const pcount = pitchZoneCountsRef.current[pzone];
       const ptarget = PITCH_ZONES[pzone].target;
-      if (ptarget > 0 && pcount < ptarget && (now - lastCaptureMsRef.current) >= REGISTER_CAPTURE_INTERVAL) {
+      const intervalMetAgain = (video.currentTime - lastCaptureVideoTimeRef.current) >= REGISTER_CAPTURE_INTERVAL_SEC || lastCaptureVideoTimeRef.current === 0;
+      if (ptarget > 0 && pcount < ptarget && intervalMetAgain) {
         capturedFramesRef.current.push({
           landmarks: detection.landmarks as unknown as Landmark3D[],
           matrix: detection.matrix ? { data: detection.matrix.data } : undefined,
           yaw,
         });
         pitchZoneCountsRef.current[pzone]++;
-        lastCaptureMsRef.current = now;
+        lastCaptureVideoTimeRef.current = video.currentTime;
       }
 
-      // 檢查 4 個方向（free-order）
-      // 閾值要明顯高於 noise（典型 noise ±0.05）— 用 0.20/0.10 確保是「真的轉到位」。
-      // yaw 範圍大（90° profile 可到 0.50-0.85+），threshold 0.20 = ~35-45° 半轉
-      // pitch 範圍較窄（抬/低頭 nose Y 偏移 / face height），threshold 0.10 = ~25-35° tilt
-      const TURN_YAW_THRESHOLD = 0.20;   // v20.13d: faceWidth-based yaw 範圍 ±1.2-1.6 peak（對稱），noise <0.10
-      const TURN_PITCH_THRESHOLD = 0.10;
-      if (yaw >=  TURN_YAW_THRESHOLD)    detector.markTurnDirection('left');
-      if (yaw <= -TURN_YAW_THRESHOLD)    detector.markTurnDirection('right');
-      if (pitch >=  TURN_PITCH_THRESHOLD) detector.markTurnDirection('up');
-      if (pitch <= -TURN_PITCH_THRESHOLD) detector.markTurnDirection('down');
+      // v20.14: zone-coverage done 判定（取代 v20.13b 的 threshold-only mark）
+      //   設計：該方向（淺 + 深 zone）累積 ≥ TURN_DONE_FRAMES 就 mark done
+      //   - 對應 v15「累積足夠 frames」設計，不分淺/深強求
+      //   - 比 v20.13b 嚴（要 N frames 不是 1 frame），但比「far-* zone 滿」寬鬆（影片中 user
+      //     抬頭/轉右可能不夠深，但累積夠多 sample 就足以提供 PnP 視角資料）
       const z = zoneCountsRef.current;
       const pz = pitchZoneCountsRef.current;
+      const leftCount  = z[0] + z[1];     // yaw > 0.08（淺左 + 深左）
+      const rightCount = z[3] + z[4];     // yaw < -0.08（淺右 + 深右）
+      const upCount    = pz[0] + pz[1];   // pitch > 0.08（淺抬 + 深抬）
+      const downCount  = pz[3] + pz[4];   // pitch < -0.08（淺低 + 深低）
+      if (leftCount  >= TURN_DONE_FRAMES) detector.markTurnDirection('left');
+      if (rightCount >= TURN_DONE_FRAMES) detector.markTurnDirection('right');
+      if (upCount    >= TURN_DONE_FRAMES) detector.markTurnDirection('up');
+      if (downCount  >= TURN_DONE_FRAMES) detector.markTurnDirection('down');
 
       // Debug zone 分布（AEGIS_EAR_DUMP 時印），每秒至多一次
       try {
@@ -768,6 +829,35 @@ export function useFaceRecognition({
             setAntiSpoofResult(antiSpoof);
             isRunningRef.current = false;
 
+            // Hash 一致性診斷 — flag-gated（localStorage AEGIS_FACE_HASH_PROBE）
+            // 平時 prod 不印；要驗「同影片同 PIN 同 hash」鐵律時開 flag dump 完整 bins/raw/fingerprint
+            try {
+              if (typeof localStorage !== 'undefined' && localStorage.getItem('AEGIS_FACE_HASH_PROBE') === 'true') {
+                const bins2DArr: Array<[string, number]> = [];
+                result.frontalBins.forEach((v, k) => bins2DArr.push([k, v]));
+                bins2DArr.sort((a, b) => a[0].localeCompare(b[0]));
+                const bins3DArr: Array<[string, number]> = [];
+                result.bins3D.forEach((v, k) => bins3DArr.push([k, v]));
+                bins3DArr.sort((a, b) => a[0].localeCompare(b[0]));
+                const frames = capturedFramesRef.current;
+                const r4 = (x: number) => Math.round(x * 10000) / 10000;
+                const yawSorted = frames.map((f) => r4(f.yaw ?? 0)).sort((a, b) => a - b);
+                const f0 = frames[0]?.landmarks;
+                const f0Snap = f0 ? { n: [r4(f0[1].x), r4(f0[1].y), r4(f0[1].z || 0)], yaw: r4(frames[0].yaw ?? 0) } : null;
+                console.error(
+                  '[FaceRec][HashProbe] hashCombined=' + result.hashes.hashCombined +
+                  ' hash2D=' + result.hashes.hash2D +
+                  ' hash3D=' + result.hashes.hash3D +
+                  ' stable2D=' + result.stableCount2D +
+                  ' stable3D=' + result.stableCount3D +
+                  ' frames=' + frames.length +
+                  ' f0Snap=' + JSON.stringify(f0Snap) +
+                  ' yawSorted=' + JSON.stringify(yawSorted) +
+                  ' bins2D=' + JSON.stringify(bins2DArr) +
+                  ' bins3D=' + JSON.stringify(bins3DArr),
+                );
+              }
+            } catch { /* */ }
             devLog('[FaceRec] Register complete — 2D:', result.hashes.hash2D.slice(0, 12) + '... 3D:', result.hashes.hash3D.slice(0, 12) + '...');
             devLog('[FaceRec] Stable: 2D=' + result.stableCount2D + ' 3D=' + result.stableCount3D);
             devLog('[FaceRec] Frontal bins:', result.frontalBins.size);
@@ -1024,6 +1114,8 @@ export function useFaceRecognition({
     capturedFramesRef.current = [];
     zoneCountsRef.current = [0, 0, 0, 0, 0];
     pitchZoneCountsRef.current = [0, 0, 0, 0, 0];
+    lastCaptureVideoTimeRef.current = 0;
+    lastCaptureMsRef.current = 0;
     boneRatioResultRef.current = null;
     activeDetectorRef.current = null;
     passiveDetectorRef.current = null;

@@ -219,12 +219,24 @@ export class ActiveLivenessDetector {
     }
   }
 
-  /** UI 用：取得下一個未完成方向（依序：左 → 右 → 上 → 下） */
+  /** UI 用：取得下一個未完成方向
+   *  v20.14: 左右一組、上下一組（不強制單向順序，但兩組內成對）：
+   *    - 左右組都沒完 → 提示 'left'（任選一邊起步）
+   *    - 左右組只一邊完 → 提示另一邊
+   *    - 左右完 → 進入上下組（同樣邏輯）
+   *    - 上下完 → null（done）
+   */
   getNextPendingTurnDirection(): 'left' | 'right' | 'up' | 'down' | null {
-    if (!this.turnHits.left) return 'left';
-    if (!this.turnHits.right) return 'right';
-    if (!this.turnHits.up) return 'up';
-    if (!this.turnHits.down) return 'down';
+    // Group 1: yaw — 左右
+    if (!this.turnHits.left || !this.turnHits.right) {
+      if (!this.turnHits.left && !this.turnHits.right) return 'left';
+      return this.turnHits.left ? 'right' : 'left';
+    }
+    // Group 2: pitch — 上下
+    if (!this.turnHits.up || !this.turnHits.down) {
+      if (!this.turnHits.up && !this.turnHits.down) return 'up';
+      return this.turnHits.up ? 'down' : 'up';
+    }
     return null;
   }
 

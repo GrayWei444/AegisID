@@ -169,6 +169,31 @@ function median(values: readonly number[]): number {
   return sorted[Math.floor(sorted.length / 2)];
 }
 
+/**
+ * v20.14: 多幀 landmark 逐點平均成「一張代表臉」
+ *   先平均消單幀 noise，再算骨骼比率（比每 ratio 各自 median 穩定）。
+ *   要求各幀 landmark 數量一致；回傳 null 若無有效幀。
+ */
+function averageLandmarks(
+  multiFrame: readonly (readonly Landmark3D[])[],
+): Landmark3D[] | null {
+  const valid = multiFrame.filter((lm) => lm && lm.length >= 468);
+  if (valid.length === 0) return null;
+  const P = valid[0].length;
+  const n = valid.length;
+  const out: Landmark3D[] = new Array(P);
+  for (let i = 0; i < P; i++) {
+    let sx = 0, sy = 0, sz = 0;
+    for (const lm of valid) {
+      sx += lm[i].x;
+      sy += lm[i].y;
+      sz += lm[i].z || 0;
+    }
+    out[i] = { x: sx / n, y: sy / n, z: sz / n };
+  }
+  return out;
+}
+
 async function sha256hex(str: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
   return Array.from(new Uint8Array(buf))
@@ -664,8 +689,24 @@ export async function computeStructuralId(
   }
 
   const frontalLandmarks = frontalFrames.map((f) => f.landmarks);
-  const frontalBins = computeMedianBins(frontalLandmarks);
-  const frontalRaw = computeMedianRawRatios(frontalLandmarks);
+
+  // v20.14: 正面幀逐點平均成「一張代表正面臉」，再算 2D 骨骼比率。
+  //   user 設計：2D = 正面那一張臉純 2D 算特徵（不經 PnP 3D 演算）。
+  //   先平均 landmark 消單幀 noise → 比「每 ratio 各自取多幀 median」更穩：
+  //   median 受 frame 集合 + bin 邊界雙重影響而漂移；平均臉對 frame 集合差 1-2 張容錯。
+  const avgFace = averageLandmarks(frontalLandmarks);
+  const avgRatios = avgFace ? computeAllRatios2d(avgFace) : null;
+  const frontalBins = new Map<string, number>();
+  const frontalRaw: Record<string, number> = {};
+  if (avgRatios) {
+    for (const id of STABLE_RATIO_WHITELIST) {
+      const v = avgRatios[id];
+      if (v !== undefined && Number.isFinite(v)) {
+        frontalBins.set(id, quantizeBin(v, DEFAULT_BIN_WIDTH));
+        frontalRaw[id] = v;
+      }
+    }
+  }
 
   // Lazy import 避免循環依賴
   const { computeFaceStructureLsh } = await import('./structuralLsh');
