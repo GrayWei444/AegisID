@@ -75,10 +75,13 @@ const MIN_VERIFY_FRAMES = 5;
 const DETECTION_INTERVAL = 200;
 /** v20.14: detection throttle in **video time** (seconds).
  *  detection loop 改 requestVideoFrameCallback 逐 video frame 觸發，
- *  用 mediaTime (video timestamp) throttle → 同影片每次跑取到完全相同的 video frame 序列
- *  → 收到完全相同 frame 集合 → hash2D + hash3D 都 deterministic。
- *  真實 camera: mediaTime ≈ wall clock，行為不變（每 200ms detect 一次）。 */
-const DETECTION_INTERVAL_SEC = 0.2;
+ *  用 mediaTime (video timestamp) throttle → 同影片每次跑取到完全相同的 video frame 序列。
+ *  v20.14b: 0.2 → 0.1 採密。眨眼眼全閉只 ~0.15s，0.2s 採樣會漏掉最深閉眼幀（採到眨眼中途
+ *  半閉 openness ~0.42 沒跨 close threshold 0.34 → blink 偵測不到 → stochastic timeout）。
+ *  0.1s 採密確保採到眨眼最深幀。對真實 user 快眨眼也更 robust（非放水，仍要真眨眼到位）。
+ *  順帶讓 turn pitch 段（抬頭低頭動作短）採密、收 zone 更穩。
+ *  inference ~30-50ms < 100ms，跟得上。 */
+const DETECTION_INTERVAL_SEC = 0.1;
 
 /** 註冊模式：同 zone 最小擷取間隔 (ms)，避免同角度過多重複幀 */
 const REGISTER_CAPTURE_INTERVAL = 120;
@@ -277,6 +280,10 @@ export function useFaceRecognition({
   const lastCaptureMsRef = useRef(0);
   /** v20.14: video.currentTime-based capture throttle (取代 wall clock) */
   const lastCaptureVideoTimeRef = useRef(0);
+  // v20.15: pitch（抬/低頭）獨立的 capture 節流時鐘。原本 yaw/pitch 共用 lastCaptureVideoTimeRef
+  //   → 左右轉頭幀多時不斷重置時鐘，pitch 永遠搶不到 capture slot（up/down zone 收不滿 → flaky）。
+  //   分開後 yaw 跟 pitch 各自 0.12s 節流，互不餓死。
+  const lastPitchCaptureVideoTimeRef = useRef(0);
 
   // Anti-spoof 相關 refs
   const lastCnnTimestampRef = useRef(0);
@@ -719,12 +726,17 @@ export function useFaceRecognition({
       setCurrentYaw(yaw);
 
       // Capture throttle：用 video.currentTime（不是 wall clock）
-      //   真實 camera：video.currentTime ≈ wall clock，行為不變
+      //   真實 camera：video.currentTime ≈ wall clock，單調遞增，行為不變
       //   fake camera：video time deterministic on video content → 同影片跨次跑收同 frame 集合
       // 單位：秒；120ms = 0.12s
+      // v20.15 fix: 影片 loop 時 currentTime 會跳回 0 → elapsedVideo 變負 → 整個下一圈
+      //   captures 被卡住（要等 currentTime 爬回上次值才解鎖）。loop 後只剩第一圈能收幀，
+      //   邊界方向（抬/低頭動作短）常差 1 幀 → flaky。偵測 loop（elapsedVideo<0）視為達標
+      //   並重置 baseline，讓每圈都能繼續收。真實 camera currentTime 單調 → 永不觸發，行為不變。
       const videoTime = video.currentTime;
       const elapsedVideo = videoTime - lastCaptureVideoTimeRef.current;
-      const intervalMet = elapsedVideo >= REGISTER_CAPTURE_INTERVAL_SEC || lastCaptureVideoTimeRef.current === 0;
+      const looped = elapsedVideo < 0;
+      const intervalMet = looped || elapsedVideo >= REGISTER_CAPTURE_INTERVAL_SEC || lastCaptureVideoTimeRef.current === 0;
 
       // 收 yaw zone（每幀）
       const zone = getYawZone(yaw);
@@ -744,7 +756,8 @@ export function useFaceRecognition({
       const pzone = getPitchZone(pitch);
       const pcount = pitchZoneCountsRef.current[pzone];
       const ptarget = PITCH_ZONES[pzone].target;
-      const intervalMetAgain = (video.currentTime - lastCaptureVideoTimeRef.current) >= REGISTER_CAPTURE_INTERVAL_SEC || lastCaptureVideoTimeRef.current === 0;
+      const dtPitch = video.currentTime - lastPitchCaptureVideoTimeRef.current;
+      const intervalMetAgain = dtPitch < 0 || dtPitch >= REGISTER_CAPTURE_INTERVAL_SEC || lastPitchCaptureVideoTimeRef.current === 0;
       if (ptarget > 0 && pcount < ptarget && intervalMetAgain) {
         capturedFramesRef.current.push({
           landmarks: detection.landmarks as unknown as Landmark3D[],
@@ -752,7 +765,7 @@ export function useFaceRecognition({
           yaw,
         });
         pitchZoneCountsRef.current[pzone]++;
-        lastCaptureVideoTimeRef.current = video.currentTime;
+        lastPitchCaptureVideoTimeRef.current = video.currentTime;
       }
 
       // v20.14: zone-coverage done 判定（取代 v20.13b 的 threshold-only mark）
@@ -1125,6 +1138,7 @@ export function useFaceRecognition({
     zoneCountsRef.current = [0, 0, 0, 0, 0];
     pitchZoneCountsRef.current = [0, 0, 0, 0, 0];
     lastCaptureVideoTimeRef.current = 0;
+    lastPitchCaptureVideoTimeRef.current = 0;
     lastCaptureMsRef.current = 0;
     boneRatioResultRef.current = null;
     activeDetectorRef.current = null;
