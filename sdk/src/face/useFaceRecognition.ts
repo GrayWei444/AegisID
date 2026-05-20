@@ -676,11 +676,14 @@ export function useFaceRecognition({
     const noseX = Math.abs(geometry.noseOffsetX ?? 0);
     const isMostlyFrontal = noseX < 0.15;
     let occlusionRegion: string | null = null;
-    if (occ.hasHat) {
-      occlusionRegion = 'TOP';  // 帽子永遠擋
-    } else if (isMostlyFrontal) {
-      // 只在正面時判定其他遮擋
+    // v20.14 fix: 所有遮擋判定（含 HAT）只在正面時做。
+    //   原本 HAT「永遠檢查」→ 轉頭側臉時額頭角度變、HSV skin ratio 下降 → 誤判戴帽
+    //   → gate 擋住 turn frame → 轉頭 challenge 收不到深側臉 → 卡住失敗（user 真機實測：
+    //   「脫帽動畫甚至影響到後面的轉頭」）。側臉時 landmark/HSV 角度不可靠，不該判遮擋。
+    //   blink 段為正面，戴帽仍會被擋；通過 blink 後已驗證無帽，turn 側臉不需重複判。
+    if (isMostlyFrontal) {
       occlusionRegion =
+        occ.hasHat ? 'TOP' :
         occ.hasMask ? 'BOTTOM' :
         occ.hasSunglasses ? 'CENTER' :
         occ.hasHalfFaceLeft ? 'LEFT' :
@@ -692,7 +695,11 @@ export function useFaceRecognition({
         setGateOcclusion({ region: occlusionRegion });
         return;
       }
-      if (gateOcclusion !== null) setGateOcclusion(null);
+      // v20.14 fix: 無條件清除 — 原本 `if (gateOcclusion !== null)` guard 讀 useCallback
+      //   closure 的 gateOcclusion，但 deps 沒包含它 → closure 永遠是初始 null →
+      //   guard 永遠 false → 脫帽後 gate 卡在 {region:TOP} 不消失（user 真機實測 bug）。
+      //   改無條件 setGateOcclusion(null)，React 對同值 null dedupe 不 re-render。
+      setGateOcclusion(null);
     }
 
     // 邊挑戰邊擷取防偽推論（async，不阻塞偵測迴圈）
@@ -805,11 +812,14 @@ export function useFaceRecognition({
 
     if (!challenge) {
       // 所有挑戰完成 — 計算骨骼比率 structural ID
-      if (statusRef.current !== 'capturing') {
-        setStatusAndRef('capturing');
-      }
-
+      // v20.14 fix: 立刻停 detection loop（isRunningRef=false）— 否則 computeStructuralId 是
+      //   async，期間 detection loop（mock 影片 loop / 真實 camera 持續）會跑下一幀，
+      //   handleRegisterFrame 開頭 setStatus('face_detected') 覆蓋 'capturing' → AuthScreen
+      //   的 `status==='capturing'` 偵測不到 → 卡住沒進下一步。同時 guard 防重複 computeStructuralId。
+      if (!isRunningRef.current) return; // 已在計算 → 不重複
       if (capturedFramesRef.current.length > 0) {
+        isRunningRef.current = false; // 立刻停 loop，鎖定 status='capturing'
+        setStatusAndRef('capturing');
         // 非同步計算 structural ID（SHA-256 需要 await）
         computeStructuralId(capturedFramesRef.current)
           .then((result) => {
@@ -981,7 +991,7 @@ export function useFaceRecognition({
       setGateOcclusion({ region: occlusionRegion });
       return;
     }
-    if (gateOcclusion !== null) setGateOcclusion(null);
+    setGateOcclusion(null);  // v20.14 fix: 同 register flow，無條件清除（避免 stale-closure guard）
 
     // 邊偵測邊擷取防偽推論
     maybeSpoofCapture(video, geometry, now);
