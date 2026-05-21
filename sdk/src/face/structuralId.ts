@@ -130,7 +130,11 @@ export const STABLE_3D_FEATURES = [
   'T01_temple_width', 'T03_cheek_jaw_ratio', 'E04_orbital_width_R',
   'E05_intercanthal', 'N05_alar_width_3d', 'F05_face_side',
   'G02_face_width_height', 'T02_temple_recess', 'T05_bizygomatic',
-  'E03_orbital_width_L', 'F04_bigonial',
+  'E03_orbital_width_L',
+  // v20.16 移除 'F04_bigonial'：3D 下顎寬（jawL/jawR 為 silhouette 輪廓點，PnP 深度最不穩），
+  //   值常卡 bin 邊界（~1.7→bin 6/7 翻動）→ hash3D 漂移 → 跨次/跨裝置 account_key 不一致
+  //   （E2E 實測：Alice F04:6 vs Bob F04:7，同影片其餘 10 個 3D bin 全相同，2D hash 完全一致）。
+  //   bigonial 資訊已隱含於 T03_cheek_jaw_ratio (= bizygomatic/bigonial)，移除不損鑑別力。
 ] as const;
 
 export const LOGIN_MATCH_THRESHOLD = 0.80;
@@ -725,9 +729,11 @@ export async function computeStructuralId(
   let hash3D = '';
   let hashCombined = '';
   const bins3D = new Map<string, number>();
+  let features3DForLog: Record<string, number> | null = null;
 
   if (model3D) {
     const features3D = compute3DFeatures(model3D);
+    features3DForLog = features3D;
 
     // Step 4: 3D bins + hash
     const hash3DParts: string[] = [];
@@ -744,6 +750,25 @@ export async function computeStructuralId(
     // Step 5: Combined hash
     hashCombined = await sha256hex(hash2DParts.join('|') + '||' + hash3DParts.join('|'));
   }
+
+  // DIAG（prod 可見，BrowserMonitor 抓）：印 hash2D/hash3D + 完整 bins + raw 值，
+  //   用來比對 Alice vs Bob 同影片為何 hash 不同 — 找出是 2D 還是 3D 漂移、哪個 bin 變、
+  //   raw 值是否卡在 bin 邊界（quantizeBin frac≥0.80 進位）。
+  try {
+    if (typeof window !== 'undefined'
+        && typeof localStorage !== 'undefined'
+        && (localStorage.getItem('AEGIS_EAR_DUMP') === 'true' || localStorage.getItem('AEGIS_E2E_TEST') === 'true')) {
+      const bins2dStr = STABLE_RATIO_WHITELIST
+        .map((id) => `${id}:${frontalBins.get(id) ?? '-'}(${(frontalRaw[id] ?? NaN).toFixed(3)})`)
+        .join(' ');
+      const bins3dStr = STABLE_3D_FEATURES
+        .map((fk) => `${fk.split('_')[0]}:${bins3D.get(fk) ?? '-'}(${(features3DForLog?.[fk] ?? NaN).toFixed(3)})`)
+        .join(' ');
+      console.error(`[DIAG:HASH] 2D=${hash2D.slice(0, 12)} 3D=${hash3D.slice(0, 12)} comb=${hashCombined.slice(0, 12)} frontalFrames=${frontalFrames.length} model3D=${model3D ? 'ok' : 'null'}`);
+      console.error(`[DIAG:HASH:2D] ${bins2dStr}`);
+      console.error(`[DIAG:HASH:3D] ${bins3dStr}`);
+    }
+  } catch { /* */ }
 
   return {
     hashes: { hash2D, hash3D, hashCombined },
