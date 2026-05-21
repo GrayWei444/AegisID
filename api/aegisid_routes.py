@@ -702,37 +702,24 @@ def create_aegisid_router(
         with get_db() as conn:
             cursor = conn.cursor()
 
-            # Rate limiting: face_hash 限速（同臉 48hr 限 2 次）
             face_hmac = hmac.new(
                 api_secret.encode(), body.face_hash.encode(), hashlib.sha256
             ).hexdigest()
-
-            cursor.execute("""
-                SELECT COUNT(*) FROM registration_rate_limits
-                WHERE dimension = 'face' AND hmac_hash = ? AND created_at > ?
-            """, (face_hmac, now - ttl))
-            if cursor.fetchone()[0] >= 2:
-                raise HTTPException(status_code=429, detail="Same face registered too many times")
-
-            # IP rate limiting: 每 IP 24hr 最多 5 次
             ip_hmac = hmac.new(
                 api_secret.encode(), client_ip.encode(), hashlib.sha256
             ).hexdigest()
-            cursor.execute("""
-                SELECT COUNT(*) FROM registration_rate_limits
-                WHERE dimension = 'ip' AND hmac_hash = ? AND created_at > ?
-            """, (ip_hmac, now - 24 * 3600))
-            if cursor.fetchone()[0] >= 5:
-                raise HTTPException(status_code=429, detail="Too many registrations from this IP")
 
-            # 檢查 account_key 是否已存在
+            # 先判斷 account_key 是否已存在 → 決定是「新註冊」還是「既有帳號 UPDATE」。
+            # 關鍵：rate limit 只該套用在「新註冊」（INSERT）。既有帳號的 blob 同步 / 重登
+            # re-register 走 UPDATE 分支，是合法高頻動作，不可被 rate limit 擋（否則返家使用者
+            # 或頻繁 blob 同步會被誤殺 429）。原本 rate limit check 在分支之前無條件執行 → bug。
             cursor.execute("""
                 SELECT id FROM identity_anchors WHERE account_key = ?
             """, (body.account_key,))
             existing = cursor.fetchone()
 
             if existing:
-                # 同帳號重新註冊 → 更新加密身份包
+                # 既有帳號 → 純更新加密身份包（不檢查、不記錄 rate limit）
                 cursor.execute("""
                     UPDATE identity_anchors
                     SET encrypted_blob = ?, blob_salt = ?, blob_iv = ?,
@@ -746,7 +733,23 @@ def create_aegisid_router(
                 ))
                 anchor_id = existing[0]
             else:
-                # 新帳號
+                # 新帳號 → 此時才檢查 rate limit
+                # face_hash 限速（同臉 48hr 限 2 次）
+                cursor.execute("""
+                    SELECT COUNT(*) FROM registration_rate_limits
+                    WHERE dimension = 'face' AND hmac_hash = ? AND created_at > ?
+                """, (face_hmac, now - ttl))
+                if cursor.fetchone()[0] >= 2:
+                    raise HTTPException(status_code=429, detail="Same face registered too many times")
+
+                # IP 限速（每 IP 24hr 最多 5 次）
+                cursor.execute("""
+                    SELECT COUNT(*) FROM registration_rate_limits
+                    WHERE dimension = 'ip' AND hmac_hash = ? AND created_at > ?
+                """, (ip_hmac, now - 24 * 3600))
+                if cursor.fetchone()[0] >= 5:
+                    raise HTTPException(status_code=429, detail="Too many registrations from this IP")
+
                 cursor.execute("""
                     INSERT INTO identity_anchors
                     (face_lsh_hash, face_hash, account_key,
@@ -761,9 +764,7 @@ def create_aegisid_router(
                 ))
                 anchor_id = cursor.lastrowid
 
-                # 記錄 rate limit — 只在「新帳號註冊」時記。
-                # blob 同步 / 重登 re-register 走 if existing (UPDATE) 分支，
-                # 不該記 rate limit，否則高頻 blob 同步會撞「同臉 48hr 限 2 次」429。
+                # 記錄 rate limit（只在新帳號註冊時）
                 cursor.execute("""
                     INSERT INTO registration_rate_limits (dimension, hmac_hash) VALUES ('face', ?)
                 """, (face_hmac,))
